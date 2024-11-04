@@ -7,22 +7,13 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from tabulate import tabulate
 
-#myšlienka bude 2-rozmerná množina clusterov, pri tom centroid based
 
+#myšlienka bude 2-rozmerná množina clusterov, pri tom centroid based
 #generovanie
-root = tkinter.Tk()
-canvas = tkinter.Canvas(root,width=800,height=800)
 #X,Y = sú od -5000 do 5000
 
-
-# Umiestnenie canvasu a scrollbarov
-canvas.grid(row=0, column=0, sticky="nsew")
-
-
-root.grid_rowconfigure(0, weight=1)
-root.grid_columnconfigure(0, weight=1)
-
 matica_vzdialenosti = []
+
 
 #1. zvol 20 bodov náhodných
 clusters = set()
@@ -35,7 +26,6 @@ print(clusters)
 #dalsich 20000 bodov
 #toto ešte optimalizovať
 while len(clusters) != 20020:
-   # print(random.choice(clusters))
     c = random.choice(list(clusters))
     bod_x, bod_y = c[0],c[1]
     #treba ocekovat ci mozeme mat interval -100 až 100 alebo nie
