@@ -25,35 +25,19 @@ root.grid_columnconfigure(0, weight=1)
 matica_vzdialenosti = []
 
 #1. zvol 20 bodov náhodných
-#c0 = np.full((1, 20000), fill_value=[0, 0], dtype=object)
-c0 = np.empty((1, 20000), dtype=object)
-
-count = 0
-while count != 3:
+clusters = set()
+while len(clusters) != 20:
     x,y = random.randint(-5000,5000),random.randint(-5000,5000)
+    clusters.add((x, y))
 
-
-    #if any((np.array_equal(elem, [[x,y]]) for elem in c0[0])):
-    #c0[0, count] = [[x, y]]
-    count += 1
-
-    target = [[x,y]]
-    #found = np.any([np.array_equal(elem, target) for row in c0 for elem in row])
-
-
-
-
-print(c0)
+print(clusters)
 
 #dalsich 20000 bodov
-clusters = c0
-#print(clusters)
-
-count = 0 #toto ešte optimalizovať
-while count != 15:
+#toto ešte optimalizovať
+while len(clusters) != 20020:
    # print(random.choice(clusters))
-    c = random.choice(clusters)
-    bod_x, bod_y = c[0][0],c[0][1]
+    c = random.choice(list(clusters))
+    bod_x, bod_y = c[0],c[1]
     #treba ocekovat ci mozeme mat interval -100 až 100 alebo nie
     x_offset_1, x_offset_2 = -100,100
     y_offset_1, y_offset_2 = -100,100
@@ -74,11 +58,8 @@ while count != 15:
     y_offset = random.randint(y_offset_1,y_offset_2)
     new_x, new_y = bod_x + x_offset, bod_y + y_offset
 
-    if [[new_x,new_y]] not in clusters:
-        clusters.append([[new_x,new_y]])
-        count += 1
-    else:
-        print("already in list")
+    clusters.add((new_x,new_y))
+
 
 print(clusters)
 
