@@ -92,40 +92,42 @@ def calculate_centroid(body): #funkcia s numpy v C optimalizovaná
     print("Minimum:", minimum, "at position (", row_min, ",", col_min, ")")
     return minimum, row_min, col_min"""
 
+
 def find_min(matica):
-    minimum = np.min(matica) #nájde v celej matici najnižšiu hodnotu
-    index1,index2 = np.unravel_index(minimum,(matica.shape[0],matica.shape[1]))
+    dolny_troj_indexy = np.tril_indices(matica.shape[0], -1) #vyberie indexy hodnot dolneho trojuholnika
+    dolny_troj_values = matica[dolny_troj_indexy] #extrahuje hodnoty dolneho trojuholnika
+
+    valid_mask = (dolny_troj_values != 0) & (~np.isnan(dolny_troj_values))  #maska pre hodnoty, ktoré nie su 0 ani nan
+    valid_values = dolny_troj_values[valid_mask]  #extrahovanie hodnot podla masky/filtra
+
+    minimum = np.min(valid_values) #nájdenie minima v platných hodnotách
+
+    valid_indices = np.where(valid_mask)[0] #platné indexy
+    min_valid = valid_indices[np.argmin(valid_values)] #platný index prcej pozície minima v maskovanej matici
+    min_index = (dolny_troj_indexy[0][min_valid], dolny_troj_indexy[1][min_valid]) #prevod na indexy 2d matice
+
+    print(minimum, min_index)
+    return minimum, min_index[0], min_index[1]
 
 
 
+def find_avg_distance(cluster):
+    centroid = calculate_centroid(cluster) #vypočíta centroid clusteru
 
+    points = np.array(cluster) #vytvorí np array z bodov clusteru
+    distances = np.linalg.norm(points - centroid, axis=1) #vypočíta všetky vzdialenosti od centroidu
 
+    avg_distance = np.mean(distances) #vypočíta priemer vzdialeností
 
-
-def find_avg_distance(c):
-    print("\n# rátam avg #\n")
-    centroid_x, centroid_y = calculate_centroid(c)
-
-    vzdialenosti = 0
-
-    for body in c:
-        d = calculate_distance(centroid_x,centroid_y,body[0],body[1])
-        print("d: ",centroid_x,centroid_y,body[0],body[1])
-        vzdialenosti += d
-        print("added: ",body, " d: ", d)
-
-    avg = vzdialenosti/len(c)
-    print("centroid: ", centroid_x, centroid_y)
-    print("vzd: ",vzdialenosti, " poc: ", len(c))
-    print("\n# koniec avg #\n")
-
-
-    if avg <= 500:
+    print("avg d: ", avg_distance)
+    if avg_distance <= 500: #cekne, či je v poriadku
         print("cluster je ok")
         return 0
     else:
-        print("cluster je nie ok ", avg)
+        print("cluster je nie ok ", avg_distance)
         return 1
+
+
 
 
 def remove_column(matica, col_idx):

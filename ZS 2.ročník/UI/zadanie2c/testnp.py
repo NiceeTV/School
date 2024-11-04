@@ -18,7 +18,7 @@ while len(clusters) != 20:
 
 
 count = len(clusters) #toto ešte optimalizovať
-while len(clusters) != 20020:
+while len(clusters) != 100:
     c = random.choice(list(clusters))
 
     bod_x, bod_y = c[0],c[1]
@@ -69,14 +69,14 @@ df = pd.DataFrame(matica_vzd[:100, :100])
 print(tabulate(df, headers='keys', tablefmt='psql'))
 
 
-cluster = (  ( (1,2),(2,3),(3,4)             ), (4,5)                )
+cluster = (  ( (1,2),(2,3),(3,4),(8,9),(4,6),(9,3),(1,4)             ), (4,5)                )
 print(cluster[0])
 
 
 def calculate_centroid2(body):
     centroid = np.mean(body, axis=0)
-    c = (int(centroid[0]), int(centroid[1])) #premena na int, lebo máme pixely a potrebujeme celé súradnice
-    return c
+    #c = (int(centroid[0]), int(centroid[1])) #premena na int, lebo máme pixely a potrebujeme celé súradnice
+    return centroid
 
 
 
@@ -116,7 +116,7 @@ def find_min(matica):
     #print(minimum)
 
     print(minimum, min_index)
-    #return minimum, min_index[0], min_index[1]
+    return minimum, min_index[0], min_index[1]
 
 
 
@@ -137,6 +137,60 @@ def find_min(matica):
     return minimum, row_min, col_min"""
 
 
+def find_avg_distance(c):
+    print("\n# rátam avg #\n")
+    centroid_x, centroid_y = calculate_centroid2(c)
+
+    vzdialenosti = 0
+
+    for body in c:
+        d = calculate_distance([centroid_x,centroid_y],[body[0],body[1]])
+        print("d: ",centroid_x,centroid_y,body[0],body[1])
+        vzdialenosti += d
+        print("added: ",body, " d: ", d)
+
+    avg = vzdialenosti/len(c)
+    print("centroid: ", centroid_x, centroid_y)
+    print("vzd: ",avg, " poc: ", len(c))
+
+
+
+    if avg <= 500:
+        print("cluster je ok")
+        print("\n# koniec avg #\n")
+        return 0
+    else:
+        print("cluster je nie ok ", avg)
+        print("\n# koniec avg #\n")
+        return 1
+
+
+def find_avg_distance2(cluster):
+    centroid = calculate_centroid2(cluster)
+
+    print("centroid: ", centroid)
+
+    points = np.array(cluster)
+    distances = np.linalg.norm(points - centroid, axis=1)
+
+    # Vypočítame priemernú vzdialenosť
+    avg_distance = np.mean(distances)
+
+    print("avg d: ", avg_distance)
+    if avg_distance <= 500:
+        print("cluster je ok")
+        return 0
+    else:
+        print("cluster je nie ok ", avg_distance)
+        return 1
+
+
+
+
+
+
+
+
 
 
 print("zaciname")
@@ -144,8 +198,11 @@ start = time.time()
 
 #minimum, i1, i2 = find_min(matica_vzd)
 
-find_min(matica_vzd)
+#find_min(matica_vzd)
 #minimum,i1,i2 = find_min(matica_vzd)
+
+find_avg_distance(cluster[0])
+find_avg_distance2(cluster[0])
 
 
 end = time.time()
