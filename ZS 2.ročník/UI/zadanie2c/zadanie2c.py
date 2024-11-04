@@ -6,6 +6,7 @@ from scipy.spatial.distance import euclidean
 import matplotlib.pyplot as plt
 import pandas as pd
 from tabulate import tabulate
+from scipy.spatial.distance import pdist, squareform
 
 
 #myšlienka bude 2-rozmerná množina clusterov, pri tom centroid based
@@ -59,46 +60,24 @@ def calculate_distance(x1,y1,x2,y2):
     return math.sqrt((x1-x2)**2 + (y1-y2)**2) #vzdialenost c
 
 #vyplnit maticu vzdialenosti
-for i in clusters:
-    riadok = []
-    for j in clusters:
-        #print(i,j)
-        d = calculate_distance(i[0][0],i[0][1],j[0][0],j[0][1])
-        riadok.append(d)
+clusters = np.array(list(clusters))
 
-    matica_vzdialenosti.append(riadok)
+#tvorba matice
+matica_vzd = np.empty((20020,20020)) #inicializacia matice vzdialenosti
+distances = squareform(pdist(clusters)) #výpočet vzdialeností, pdist vypočíta vzdialenost raz pre každú dvojicu a squareform vloží do matice
 
-df = pd.DataFrame(matica_vzdialenosti)
-#print(tabulate(df, headers='keys', tablefmt='psql'))
+def calculate_distance(x1,y1,x2,y2): #optimalizovaný vzorec na vzdialenost v numpy
+    return np.linalg.norm(np.array([x2,y2]) - np.array([x1,y1]))
 
 
-#for i in matica_vzdialenosti:
-#    print(i)
-
-#v tkinteri potom prehodit y suradnicu, aby rastla normálne podla stredu 0,0
-
-#print(clusters)
-
-#clusters = [   [  [0,1], [1,2], [1,3]  ], [2,5]   ]
+def calculate_centroid(body): #funkcia s numpy v C optimalizovaná
+    centroid = np.mean(body, axis=0) #vypočíta priemer súradníc pola
+    c = (int(centroid[0]), int(centroid[1])) #premena na int, lebo máme pixely a potrebujeme celé súradnice
+    return c
 
 
 
-def calculate_centroid(body):
-    sum_x, sum_y = 0,0
-    if len(body) != 1:
-        for i in body:
-            #print(i)
-            sum_x += i[0]
-            sum_y += i[1]
-    else:
-        sum_x = body[0][0]
-        sum_y = body[0][1]
-
-
-    return sum_x//len(body), sum_y//len(body)
-
-
-def find_min(matica):
+"""def find_min(matica):
     n = len(matica)
     minimum = float('inf')  # Inicializácia na nekonečno
     row_min, col_min = -1, -1  # Inicializácia indexov
@@ -111,7 +90,16 @@ def find_min(matica):
                 row_min, col_min = i, j
 
     print("Minimum:", minimum, "at position (", row_min, ",", col_min, ")")
-    return minimum, row_min, col_min
+    return minimum, row_min, col_min"""
+
+def find_min(matica):
+    minimum = np.min(matica) #nájde v celej matici najnižšiu hodnotu
+    index1,index2 = np.unravel_index(minimum,(matica.shape[0],matica.shape[1]))
+
+
+
+
+
 
 
 def find_avg_distance(c):
