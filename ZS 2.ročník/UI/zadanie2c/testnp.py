@@ -18,7 +18,7 @@ while len(clusters) != 20:
 
 
 count = len(clusters) #toto ešte optimalizovať
-while len(clusters) != 100:
+while len(clusters) != 20020:
     c = random.choice(list(clusters))
 
     bod_x, bod_y = c[0],c[1]
@@ -47,26 +47,27 @@ while len(clusters) != 100:
 
 #print(clusters)
 
+
 clusters = np.array(list(clusters))
 
-#print(clusters)
-
-#tvorba matice
-
-#matica_vzd = np.empty((20020,20020))
-#matica_vzd = [[0]*1020]*1020
-#differences = clusters[:, np.newaxis, :] - clusters[np.newaxis, :, :]
 
 #distances = np.linalg.norm(clusters[:, np.newaxis] - clusters,axis=2)
 matica_vzd = squareform(pdist(clusters))
+
+
+
+clusters = clusters.tolist()
+
+
+
 
 #print(matica_vzd)
 def calculate_distance(bod1,bod2): #funkcia v C, ovela rychlejsia ako normalny python
     return np.linalg.norm(np.array(bod2) - np.array(bod1))
 
 
-df = pd.DataFrame(matica_vzd[:100, :100])
-print(tabulate(df, headers='keys', tablefmt='psql'))
+#df = pd.DataFrame(matica_vzd[:100, :100])
+#print(tabulate(df, headers='keys', tablefmt='psql'))
 
 
 cluster = (  ( (1,2),(2,3),(3,4),(8,9),(4,6),(9,3),(1,4)             ), (4,5)                )
@@ -74,13 +75,12 @@ print(cluster[0])
 
 
 def calculate_centroid2(body):
-    centroid = np.mean(body, axis=0)
-    #c = (int(centroid[0]), int(centroid[1])) #premena na int, lebo máme pixely a potrebujeme celé súradnice
-    return centroid
-
-
-
-
+    print(len(body))
+    if len(body) == 1:
+        return body[0]
+    else:
+        centroid = np.mean(body, axis=0)
+        return centroid
 
 def find_min(matica):
     """non_zero_indices = np.where(matica != 0) #indexy hodnôt matice, ktoré nie sú 0
@@ -118,9 +118,6 @@ def find_min(matica):
     print(minimum, min_index)
     return minimum, min_index[0], min_index[1]
 
-
-
-
 """def find_min2(matica):
     n = len(matica)
     minimum = float('inf')  # Inicializácia na nekonečno
@@ -135,7 +132,6 @@ def find_min(matica):
 
     print("Minimum:", minimum, "at position (", row_min, ",", col_min, ")")
     return minimum, row_min, col_min"""
-
 
 def find_avg_distance(c):
     print("\n# rátam avg #\n")
@@ -164,7 +160,6 @@ def find_avg_distance(c):
         print("\n# koniec avg #\n")
         return 1
 
-
 def find_avg_distance2(cluster):
     centroid = calculate_centroid2(cluster)
 
@@ -185,28 +180,59 @@ def find_avg_distance2(cluster):
         return 1
 
 
+def remove_indexes_c(pole,i1,i2):
+    np_pole = np.array(pole)
+
+    mask = np.ones(np_pole.shape, dtype=bool)
+    mask[[i1, i2]] = False  # Nastavenie hodnôt na False pre indexy, ktoré chceme odstrániť
+
+    # Aplikovanie masky
+    filtered_pole = np_pole[mask]
+    return filtered_pole.tolist()
 
 
+def remove_indexes_vzd(pole,i1,i2): #odstranenie riadkov aj stlpcov pre matica_vzd
+    riadky, stlpce = pole.shape
 
+    # Vytvorenie masky, ktorá všetko zachová
+    mask = np.ones((riadky, stlpce), dtype=bool)
 
+    # Nastavenie hodnôt na False pre riadky a stĺpce, ktoré chceš odstrániť
+    mask[[i1,i2], :] = False #maskovanie riadkov
+    mask[:, [i1,i2]] = False #maskovanie stlpcov
 
+    filtered_pole = pole[mask].reshape((riadky - 2,stlpce - 2))  # Zmena tvaru matice
 
+    return filtered_pole
 
 
 print("zaciname")
 start = time.time()
+
+
+
+
+
+
 
 #minimum, i1, i2 = find_min(matica_vzd)
 
 #find_min(matica_vzd)
 #minimum,i1,i2 = find_min(matica_vzd)
 
-find_avg_distance(cluster[0])
-find_avg_distance2(cluster[0])
-
+#find_avg_distance(cluster[0])
+#find_avg_distance2(cluster[0])
 
 end = time.time()
 print("Time elapsed: ", end-start, "s")
+
+#matica_vzd = remove_indexes_vzd(matica_vzd,2,4)
+clusters = remove_indexes_c(clusters,2,4)
+
+#df = pd.DataFrame(matica_vzd[:100, :100])
+#print(tabulate(df, headers='keys', tablefmt='psql'))
+
+
 
 
 
@@ -225,3 +251,11 @@ print("Time elapsed: ", end-start, "s")
 
 #najdenie minima s maskou dolneho trojuholnika 16s-25s na 20000 bodov
 #najdenie minima s indexami dolneho trojuholnika 8-15s cca na 20000 bodov co je crazy (bez youtube aj 3-5s)
+#find avg dist cez numpy
+
+#odstranovanie riadkov a stlpcov, pri np.delete sa kopiruje cela mnozina a to je nemyslitelne pre takú velkost
+#a hlavne konverzia medzi np a normal je strasne narocna
+#konverzia clusterov na np je takmer instantna, problem je ozaj pri tých gigantických arracy nxn
+
+
+#todo optimalizacia hladania minima: pre buducnost by som mohol len raz maskovat horny trojuholnik a nie za kazdym znova a znova, ale mozno nie lebo sa menia riadky

@@ -71,9 +71,11 @@ def calculate_distance(x1,y1,x2,y2): #optimalizovaný vzorec na vzdialenost v nu
 
 
 def calculate_centroid(body): #funkcia s numpy v C optimalizovaná
-    centroid = np.mean(body, axis=0) #vypočíta priemer súradníc pola
-    c = (int(centroid[0]), int(centroid[1])) #premena na int, lebo máme pixely a potrebujeme celé súradnice
-    return c
+    if len(body) == 1:
+        return body[0]
+    else:
+        centroid = np.mean(body, axis=0)
+        return centroid
 
 
 
@@ -130,40 +132,36 @@ def find_avg_distance(cluster):
 
 
 
-def remove_column(matica, col_idx):
-    for row in matica:
-        if col_idx < len(row):
-            row.pop(col_idx)
-    return matica
+def remove_indexes_c(pole,i1,i2):
+    np_pole = np.array(pole)
+
+    mask = np.ones(np_pole.shape, dtype=bool)
+    mask[[i1, i2]] = False  # Nastavenie hodnôt na False pre indexy, ktoré chceme odstrániť
+
+    # Aplikovanie masky
+    filtered_pole = np_pole[mask]
+    return filtered_pole.tolist()
 
 
-def remove_indexes(pole,i1,i2):
-    # nech i1 je mensie
-    if i1 > i2:
-        i1, i2 = i2, i1
-    pole.pop(i1)
+def remove_indexes_vzd(pole,i1,i2): #odstranenie riadkov aj stlpcov pre matica_vzd
+    riadky, stlpce = pole.shape
 
-    if len(pole) > 0:
-        pole.pop(i2-1)
+    #vytvorim masku pre
+    mask = np.ones((riadky, stlpce), dtype=bool)
 
-    return pole
+    #nastavím false tam, kde chcem odstranit hodnoty
+    mask[[i1,i2], :] = False #maskovanie riadkov
+    mask[:, [i1,i2]] = False #maskovanie stlpcov
 
+    filtered_pole = pole[mask].reshape((riadky - 2,stlpce - 2))  #zmenim tvar matice po vymazani riadkov a stlpcov
 
-def remove_indexes_vzd(pole,i1,i2):
-    #nech i1 je mensie
-    if i1 > i2:
-        i1,i2 = i2,i1
-    pole.pop(i1)
-
-    pole = remove_column(pole,i1)
-
-    #if len(pole) > 0:
-    pole.pop(i2-1)
-    pole = remove_column(pole,i2-1)
+    return filtered_pole
 
 
 
-    return pole
+
+
+
 
 
 
