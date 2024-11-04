@@ -17,13 +17,6 @@ while len(clusters) != 20:
 
 
 
-
-
-
-
-
-
-
 count = len(clusters) #toto ešte optimalizovať
 while len(clusters) != 20020:
     c = random.choice(list(clusters))
@@ -56,7 +49,7 @@ while len(clusters) != 20020:
 
 clusters = np.array(list(clusters))
 
-print(clusters)
+#print(clusters)
 
 #tvorba matice
 
@@ -72,8 +65,8 @@ def calculate_distance(bod1,bod2): #funkcia v C, ovela rychlejsia ako normalny p
     return np.linalg.norm(np.array(bod2) - np.array(bod1))
 
 
-#df = pd.DataFrame(matica_vzd[:100, :100])
-#print(tabulate(df, headers='keys', tablefmt='psql'))
+df = pd.DataFrame(matica_vzd[:100, :100])
+print(tabulate(df, headers='keys', tablefmt='psql'))
 
 
 cluster = (  ( (1,2),(2,3),(3,4)             ), (4,5)                )
@@ -98,20 +91,32 @@ def find_min(matica):
     min_index_flat = np.flatnonzero(matica == minimum) #vráti celé indexy všetkých miest, kde je hodnota rovnaká ako naše minimum
     min_index = np.unravel_index(min_index_flat[0], matica.shape) #zistí druhý index v 2d poli"""
 
-    dolny_troj = np.tril(matica)
-    masked_troj = np.ma.masked_equal(dolny_troj, 0)
+    #dolny_troj = np.tril(matica)
+    #masked_troj = np.ma.masked_equal(dolny_troj, 0)
 
 
-    minimum = masked_troj.min()
-    min_index_flat = np.flatnonzero(masked_troj == minimum) #index v riadku
+    dolny_troj_indexy = np.tril_indices(matica.shape[0], -1)
 
-    min_index = np.unravel_index(min_index_flat[0], matica.shape)
+    dolny_troj_values = matica[dolny_troj_indexy]
+
+    valid_mask = (dolny_troj_values != 0) & (~np.isnan(dolny_troj_values)) #maska pre hodnoty, ktoré nie su 0 ani nan
+    valid_values = dolny_troj_values[valid_mask] #extrahovanie hodnot podla masky
+
+    #df = pd.DataFrame(valid_values)
+    #print(tabulate(df, headers='keys', tablefmt='psql'))
+
+
+    minimum = np.nanmin(valid_values)
+    #min_index_flat = np.flatnonzero(dolny_troj_values == minimum) #index v riadku
+
+    valid_indices = np.where(valid_mask)[0]
+    min_position_in_valid = valid_indices[np.argmin(valid_values)]
+
+    min_index = (dolny_troj_indexy[0][min_position_in_valid], dolny_troj_indexy[1][min_position_in_valid])
+    #print(minimum)
 
     print(minimum, min_index)
-    return minimum, min_index[0], min_index[1]
-
-
-
+    #return minimum, min_index[0], min_index[1]
 
 
 
@@ -139,8 +144,8 @@ start = time.time()
 
 #minimum, i1, i2 = find_min(matica_vzd)
 
-
-minimum,i1,i2 = find_min(matica_vzd)
+find_min(matica_vzd)
+#minimum,i1,i2 = find_min(matica_vzd)
 
 
 end = time.time()
@@ -161,4 +166,5 @@ print("Time elapsed: ", end-start, "s")
 #matica vyplnenie cez numpy funkciu: 82s
 #matica vyplnenie cez scipy 2.2s ???????? to je crazy
 
-#najdenie minima s maskou dolneho trojuholnika 16s na 20000 bodov
+#najdenie minima s maskou dolneho trojuholnika 16s-25s na 20000 bodov
+#najdenie minima s indexami dolneho trojuholnika 8-15s cca na 20000 bodov co je crazy (bez youtube aj 3-5s)
