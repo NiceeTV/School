@@ -82,8 +82,8 @@ def calculate_centroid2(body):
 
 def update_mask(mask,i1,i2):
     #aktualizujeme masku namiesto toho, aby sme robili novu masku na takmer identickú maticu
-    mask[[i1, i2], :] = False  #maskovanie riadkov
-    mask[:, [i1, i2]] = False  #maskovanie stlpcov
+    mask[i2, :] = True  #maskovanie riadkov
+    mask[:, [i1,i2]] = True  #maskovanie stlpcov
     return mask
 
 
@@ -196,11 +196,11 @@ def find_avg_distance2(cluster):
         return 1
 
 
-def remove_indexes_c(pole,i1,i2):
+def remove_indexes_c(pole,i2):
     np_pole = np.array(pole,dtype=object)
 
     mask = np.ones(np_pole.shape[0], dtype=bool)
-    mask[[i1, i2]] = False  # Nastavenie hodnôt na False pre indexy, ktoré chceme odstrániť
+    mask[i2] = False  # Nastavenie hodnôt na False pre indexy, ktoré chceme odstrániť
 
     # Aplikovanie masky
     filtered_pole = np_pole[mask]
@@ -242,30 +242,29 @@ def remove_indexes_vzd2(pole,i1,i2):
 
 
 
-def aglomeratne_centroidne(clusters):
+def aglomeratne_centroidne(clusters,mask):
     global matica_vzd
 
-    np.fill_diagonal(matica_vzd, np.inf)
+    #np.fill_diagonal(matica_vzd, np.inf)
 
-    mask = np.triu(np.ones_like(matica_vzd, dtype=bool), k=1)
+    #mask = np.triu(np.ones_like(matica_vzd, dtype=bool), k=1)
     # Nastaviť horný trojuholník na nekonečno
-    matica_vzd[mask] = np.inf
+    #matica_vzd[mask] = np.inf
 
 
     while True:
-        j = 0
-        print("\npocet: ",len(clusters))
+        pocet = len([x for x in clusters if x is not None])
+        print("\npocet: ",pocet)
 
 
         #df = pd.DataFrame(matica_vzd)
         #print(tabulate(df, headers='keys', tablefmt='psql'))
-        #1.iteracia
 
-        #print(f"zaciname, {j}.ta iterácia")
+
         start = time.time()
 
         najmensia_vzd,i1,i2 = find_min_idx(matica_vzd)
-        #min2,i3,i4 = find_min2(matica_vzd)
+
 
         end = time.time()
         print("Najdenie minima: ", end - start, "s")
@@ -282,89 +281,118 @@ def aglomeratne_centroidne(clusters):
 
         #print("old1: ",c1, " old2: ",c2, " new: ",new_cluster)
 
-        start = time.time()
+        #start = time.time()
         #check noveho clustera
         podmienka = find_avg_distance2(new_cluster)
         if podmienka == 1 or len(clusters) == 1:
             print("broke here")
             break
 
-        end = time.time()
-        print("AVG dist: ", end - start, "s")
+        #end = time.time()
+        #print("AVG dist: ", end - start, "s")
 
         #clusters = remove_indexes(clusters,i1,i2)
 
-        start = time.time()
-        clusters = remove_indexes_c(clusters,i1,i2)
-        end = time.time()
-        print("Remove clusters idx: ", end - start, "s")
-        #print("new c: ",clusters)
-        #vymaz riadky i1,i2
-        #pridaj riadok na koniec s clusterom a zapln ho hodnotami
-
-        #to iste v clusters
-        start = time.time()
-        clusters.append(new_cluster)  # na koniec
-        end = time.time()
-        print("Pridanie na koniec do clsuters: ", end - start, "s")
+        #start = time.time()
 
 
-        #matica_vzd = remove_indexes_vzd(matica_vzd, i1, i2)
-        start = time.time()
-        matica_vzd = remove_indexes_vzd(matica_vzd,i1,i2)
-        end = time.time()
-        print("Remove z matice_czd: ", end - start, "s")
+
+
+        #clusters = remove_indexes_c(clusters,i2)
+        #del clusters[i2]
+        clusters[i2] = None
+
+        clusters[i1] = new_cluster
+
+        #print("new c1: ",clusters[i1])
+
+        #end = time.time()
+        #print("Remove clusters idx + odstranenie z clusters: ", end - start, "s")
+
+
+
+
+        #start = time.time()
+
+        #matica_vzd = remove_indexes_vzd(matica_vzd,i1,i2)
+
+
+
+        mask = update_mask(mask,i1,i2) #zamaskujem stlpce a riadky i2
+        matica_vzd = np.ma.masked_array(matica_vzd, mask=mask)
+
+
+
+
+
+
+
+        #matica_vzd = np.ma.masked_array(matica_vzd, mask=mask)
+
+
+
+        #end = time.time()
+        #print("Remove z matice_vzd: ", end - start, "s")
 
         centroid_x, centroid_y = calculate_centroid2(new_cluster)
 
 
 
-        start = time.time()
-        distances = np.zeros(len(clusters))
-        centroids = np.array([calculate_centroid2(cluster) for cluster in clusters])
+        #start = time.time()
+        distances = np.zeros(matica_vzd.shape[0])
+
+
+        """centroids = np.array([calculate_centroid2(cluster) for cluster in clusters])
 
         for index, (centroid2_x, centroid2_y) in enumerate(centroids):
             d = calculate_distance([centroid_x, centroid_y], [centroid2_x, centroid2_y])
-            distances[index] = d
+            distances[index] = d"""
 
-        distances[-1] = np.inf
+
+        for index,c in enumerate(clusters):
+            if c is not None:
+                centroid2_x, centroid2_y = calculate_centroid2(c)
+                d = calculate_distance([centroid_x, centroid_y], [centroid2_x, centroid2_y])
+                distances[index] = d
+
+
+
+
+
+        #distances[-1] = np.nan
+
+        #end = time.time()
+        #print("Pocitanie riadka: ", end - start, "s")
+
+        #distances[i2] = 0
+        #distances[i1] = 0
+
+        #start = time.time()
+
+        #nahradíme i1 novým riadkom
+
+
+        #upraviť riadok v maske
+        mask[i1] = False
+        mask = np.logical_or(mask,distances == 0)
+
+        distances[distances == 0] = np.nan
+
+        matica_vzd[i1] = distances
+
+        matica_vzd = np.ma.masked_array(matica_vzd, mask=mask)
+
+
 
         end = time.time()
-        print("Pocitanie riadka: ", end - start, "s")
-        #print("pridal sa riadok: ", riadok)
-        #matica_vzd.append(distances)
-
-        #riadok[-1] = np.inf
-        #toto optimalizovat
-        #print("pridávam riadok: ", riadok)
-
-        #num_columns = len(riadok)
-        #new_shape = (matica_vzd.shape[0], num_columns)
-
-
-
-        #print(len(riadok),matica_vzd.shape)
-
-        #if len(riadok) > matica_vzd.shape[0]:
-        start = time.time()
-        matica_vzd = np.insert(matica_vzd, matica_vzd.shape[1], np.inf, axis=1)  # Pridáme stĺpec s nulami
-
-
-        # Vytvorenie nového riadku, ktorý má o jeden prvok viac
-        riadok = np.array(distances)  # Prevod riadku na numpy pole
-
-
-
-        matica_vzd = np.vstack([matica_vzd, riadok])
-        end = time.time()
-        print("Pridanie riadka: ", end - start, "s")
+        print("Time elapsed: ", end - start, "s")
 
         print("\n")
         #end = time.time()
         #print("Time elapsed: ", end - start, "s")
 
-
-
+        #df = pd.DataFrame(matica_vzd[:120, :120])
+        #print(tabulate(df, headers='keys', tablefmt='psql'))
 
 
 
@@ -384,26 +412,27 @@ def plot_clusters(clusters):
     # Iterácia cez každý cluster
     i = 0
     for cluster in clusters:
-        # Náhodná farba pre každý cluster
-        color = f'#{random.randrange(256 ** 3):06x}'
+        if cluster is not None:
+            # Náhodná farba pre každý cluster
+            color = f'#{random.randrange(256 ** 3):06x}'
 
-        # Ak má cluster viac bodov
-        if len(cluster) > 1:
-            for point in cluster:
-                # Získanie a transformácia súradníc
-                x, y = point[0], point[1]
-                # Pridanie bodu do scatter plotu
-                plt.scatter(x, y, color=color, s=10)  # s=10 je veľkosť bodu
-                #plt.text(x, y, str(i), color="red", fontsize=6)
+            # Ak má cluster viac bodov
+            if len(cluster) > 1:
+                for point in cluster:
+                    # Získanie a transformácia súradníc
+                    x, y = point[0], point[1]
+                    # Pridanie bodu do scatter plotu
+                    plt.scatter(x, y, color=color, s=10)  # s=10 je veľkosť bodu
+                    #plt.text(x, y, str(i), color="red", fontsize=6)
+                    i += 1
+
+                    #plt.plot(x,y, color=color, linestyle='-', linewidth=0.5)
+            # Ak má cluster iba jeden bod
+            else:
+                x, y = cluster[0][0], cluster[0][1]
+                plt.scatter(x, y, color=color, s=10)
+                #plt.text(x, y, str(i), color="red", fontsize=12)
                 i += 1
-
-                #plt.plot(x,y, color=color, linestyle='-', linewidth=0.5)
-        # Ak má cluster iba jeden bod
-        else:
-            x, y = cluster[0][0], cluster[0][1]
-            plt.scatter(x, y, color=color, s=10)
-            #plt.text(x, y, str(i), color="red", fontsize=12)
-            i += 1
 
     # Zobrazenie grafu
     #plt.xlim(0, 800)  # Nastavenie limitov na osi X podľa posunu
@@ -412,6 +441,8 @@ def plot_clusters(clusters):
     plt.ylabel("Y Axis")
     plt.title("Scatter plot with random colors per cluster")
     plt.show()
+
+    #plt.savefig('sinus_graph.png')
 
 
 def plot2(clusters):
@@ -485,7 +516,24 @@ start = time.time()
 
 #np.fill_diagonal(matica_vzd, np.inf)
 
-t = threading.Thread(target=aglomeratne_centroidne, args=(clusters,))
+#t = threading.Thread(target=aglomeratne_centroidne, args=(clusters,))
+#t.start()
+
+
+np.fill_diagonal(matica_vzd, np.inf)
+mask = np.triu(np.ones_like(matica_vzd, dtype=bool), k=1)
+
+mask_diag = np.eye(matica_vzd.shape[0], dtype=bool)
+
+mask = mask | mask_diag
+
+matica_vzd = np.ma.masked_array(matica_vzd, mask=mask)
+
+#valid_mask = np.ones(matica_vzd, dtype=bool)
+
+#np.fill_diagonal(matica_vzd, np.inf)
+
+t = threading.Thread(target=aglomeratne_centroidne, args=(clusters,mask))
 t.start()
 
 #clusters = aglomeratne_centroidne(clusters)
@@ -554,4 +602,14 @@ print(tabulate(df, headers='keys', tablefmt='psql'))
 #testy mierne neoptimalizovany append:
 #1000 - 8.4s, 8.39s
 #5000
+
+
+
+
+#nová idea, keďže z matice je probleme odstraniť aj maskou dokonca, tak budeme nahradzať
+
+
+
+
+
 
