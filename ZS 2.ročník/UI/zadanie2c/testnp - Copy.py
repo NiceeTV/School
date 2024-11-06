@@ -134,16 +134,20 @@ def find_min_idx(x):
 
 
     #k = x.argmin()
+    m = np.min(x)
     #ncol = x.shape[1]
     #minimum,i1,i2 = x[k//ncol,k%ncol], k//ncol,k%ncol
     #i1,i2 = k//ncol,k%ncol
     #minimum = x[i1,i2]
-    i, j = np.unravel_index(np.argmin(matica_vzd), matica_vzd.shape)
-    minimum = x[i,j]
-    print(minimum,i,j)
+    #i, j = np.unravel_index(np.argmin(matica_vzd), matica_vzd.shape)
+    #minimum = x[i,j]
+
+
+    #print(minimum,i,j)
 
     #print(clusters[i1],clusters[i2])
-
+    minimum = 0
+    i,j = 0,0
     return minimum, i, j
 
 
@@ -508,8 +512,7 @@ def plot2(clusters):
 
 #df = pd.DataFrame(matica_vzd[:120, :120])
 #print(tabulate(df, headers='keys', tablefmt='psql'))
-print("zaciname")
-start = time.time()
+
 
 #df = pd.DataFrame(matica_vzd[:120, :120])
 #print(tabulate(df, headers='keys', tablefmt='psql'))
@@ -520,7 +523,7 @@ start = time.time()
 #t.start()
 
 
-np.fill_diagonal(matica_vzd, np.inf)
+#np.fill_diagonal(matica_vzd, np.inf)
 mask = np.triu(np.ones_like(matica_vzd, dtype=bool), k=1)
 
 mask_diag = np.eye(matica_vzd.shape[0], dtype=bool)
@@ -533,8 +536,12 @@ matica_vzd = np.ma.masked_array(matica_vzd, mask=mask)
 
 #np.fill_diagonal(matica_vzd, np.inf)
 
-t = threading.Thread(target=aglomeratne_centroidne, args=(clusters,mask))
-t.start()
+#t = threading.Thread(target=aglomeratne_centroidne, args=(clusters,mask))
+#t.start()
+
+
+print("zaciname")
+start = time.time()
 
 #clusters = aglomeratne_centroidne(clusters)
 
@@ -543,7 +550,7 @@ t.start()
 #print(np.array_equal(matica_vzd,matica_vzd2))
 
 
-#minimum,i1,i2 = find_min_idx(matica_vzd)
+minimum,i1,i2 = find_min_idx(matica_vzd)
 #print(clusters[i1],clusters[i2])
 
 #np.fill_diagonal(matica_vzd, np.inf)
