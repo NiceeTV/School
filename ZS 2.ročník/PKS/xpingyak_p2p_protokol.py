@@ -7,10 +7,10 @@ import os
 
 class Peer:
     def __init__(self,ip,port,server_ip,server_port,fragment_size) -> None:
-        self.sender_thread = None
+        self.sender_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.listen_sock.settimeout(36) #po 36s prestane prijímať pakety a považuje pokus o komunikáciu neúspešný
         self.listen_sock.bind((ip,port))
-
 
         self.server_ip = server_ip
         self.server_port = server_port
@@ -22,12 +22,12 @@ class Peer:
         self.last_sent_paket = None #posledne poslaný paket, pre prípad straty
         self.print_lock = threading.Lock()
 
-        self.connected = False
-        self.accepted = False
+        self.connected = False #sme pripojený?
+        self.accepted = False #prijatie handshaku druhou stranou
         self.other_closed = False #druhý peer ukončil svoje posielanie
         self.me_closed = False #ja som prerušil posielanie
-        self.ready = True
-        self.exit = False
+        self.ready = True #je možný výpis
+        self.exit = False #ukončenie programu
 
         #musí si otvoriť porty na počúvanie
         self.listener_thread = threading.Thread(target=self.receive)
@@ -41,10 +41,15 @@ class Peer:
         self.establish_thread = threading.Thread(target=self.establish_connection)
         self.establish_thread.start()
 
+        self.listener_thread.join()  # Čakáme, kým sa listener vlákno dokončí
+        self.sender_thread.join()  # Čakáme, kým sa sender vlákno dokončí
+        self.establish_thread.join()
+
+        print("program skoncil")
+
 
 
     def establish_connection(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         print("Establishing connection ...")
 
         count = 0
@@ -54,19 +59,19 @@ class Peer:
             self.ack = 0
 
             syn_packet = self.create_packet("", packet_id, 0x00, self.sqn,self.ack, 1)
-            sock.sendto(syn_packet, (self.server_ip, self.server_port))
+            self.sender_socket.sendto(syn_packet, (self.server_ip, self.server_port))
 
             with self.print_lock:
                 print(f"Odoslaný SYN: SQN={self.sqn}, ACK={self.ack}")
             time.sleep(6)
             count += 1
 
-            if count == 1: #36s a ukončí spojenie
+            if count == 6: #36s a ukončí posielanie sám
                 print("Spojenie sa nepodarilo, druhá strana neodpovedá.")
                 self.exit = True
+                self.sender_socket.close()
                 break
 
-        sock.close()
 
 
 
@@ -131,34 +136,30 @@ class Peer:
 
 
     def send_message(self,message):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender_socket:
+        self.sqn += len(message)
+        self.last_sent_paket = self.create_packet(bytes(message,encoding='utf-8'),1,0x04,self.sqn,self.ack,1)
+        self.expected_sqn = self.sqn
 
-            self.sqn += len(message)
-            self.last_sent_paket = self.create_packet(bytes(message,encoding='utf-8'),1,0x04,self.sqn,self.ack,1)
-            self.expected_sqn = self.sqn
-
-            sender_socket.sendto(self.last_sent_paket, (target_ip, sending_port))
-            with self.print_lock:
-                self.ready = False
-                print(f"Odoslaná správa: {message}")
+        self.sender_socket.sendto(self.last_sent_paket, (target_ip, sending_port))
+        with self.print_lock:
+            self.ready = False
+            print(f"Odoslaná správa: {message}")
 
 
     def send_false_packet(self,message):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender_socket:
+        self.sqn += len(message)
+        self.last_sent_paket = self.create_packet(bytes(message, encoding='utf-8'), 1, 0x04, self.sqn, self.ack, 1)
+        self.expected_sqn = self.sqn
+        false_packet = self.last_sent_paket.copy() #kopia paketu
 
-            self.sqn += len(message)
-            self.last_sent_paket = self.create_packet(bytes(message, encoding='utf-8'), 1, 0x04, self.sqn, self.ack, 1)
-            self.expected_sqn = self.sqn
-            false_packet = self.last_sent_paket.copy() #kopia paketu
+        #vytvoríme chybu, pridáme zlé crc
+        false_packet[9] = 0xFF
+        false_packet[10] = 0xFF
 
-            #vytvoríme chybu, pridáme zlé crc
-            false_packet[9] = 0xFF
-            false_packet[10] = 0xFF
-
-            sender_socket.sendto(false_packet, (target_ip, sending_port))
-            with self.print_lock:
-                self.ready = False
-                print(f"Odoslaná správa: {message}")
+        self.sender_socket.sendto(false_packet, (target_ip, sending_port))
+        with self.print_lock:
+            self.ready = False
+            print(f"Odoslaná správa: {message}")
 
 
     def send_file(self,file_path): #to-do
@@ -166,12 +167,14 @@ class Peer:
 
 
     def receive(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
         while not self.exit:
-            response, address = self.listen_sock.recvfrom(1024)
-            sqn = (response[2] << 8) | response[3]
-            ack = (response[4] << 8) | response[5]
+            try:
+                response, address = self.listen_sock.recvfrom(1024)
+                sqn = (response[2] << 8) | response[3]
+                ack = (response[4] << 8) | response[5]
+            except socket.timeout:
+                print("Čas na prijatie komunikačného paketu vypršal. Ukončujem program.")
+                break
 
             if not self.connected:
                 if response[1] == 0x00: #ak dostane SYN, prestane posielať svoj SYN a zahaji handshake
@@ -180,7 +183,7 @@ class Peer:
                     #idem poslať SYN-ACK
                     self.ack = sqn + 1
                     syn_ack_packet = self.create_packet(bytes("", encoding='utf-8'), 1, 0x01, self.sqn, self.ack, 1)
-                    sock.sendto(syn_ack_packet, (self.server_ip, self.server_port))
+                    self.sender_socket.sendto(syn_ack_packet, (self.server_ip, self.server_port))
                     with self.print_lock:
                         print(f"Prijatý SYN: SQN={sqn}, ACK={ack}")
                         print(f"Odoslaný SYN-ACK: SQN={self.sqn}, ACK={self.ack}")
@@ -191,7 +194,7 @@ class Peer:
                     self.ack = sqn + 1
 
                     ack_packet = self.create_packet(bytes("", encoding='utf-8'), 1, 0x02, self.sqn, self.ack, 1)
-                    sock.sendto(ack_packet, (self.server_ip, self.server_port))
+                    self.sender_socket.sendto(ack_packet, (self.server_ip, self.server_port))
                     with self.print_lock:
                         print(f"Prijatý SYN-ACK: SQN={sqn}, ACK={ack}")
                         print(f"Odoslaný ACK: SQN={self.sqn}, ACK={self.ack}")
@@ -214,7 +217,7 @@ class Peer:
 
                 if response[1] == 0x06: #FIN paket, pošlem späť ACK paketň
                     ack_packet = self.create_packet(bytes("", encoding='utf-8'), 1, 0x02, self.sqn, self.ack, 1)
-                    sock.sendto(ack_packet, (self.server_ip, self.server_port))
+                    self.sender_socket.sendto(ack_packet, (self.server_ip, self.server_port))
                     #peer2 sa rozhodol, že už nebude posielať pakety, ale my ešte môžeme posielať jemu
 
                     if self.me_closed:
@@ -250,7 +253,7 @@ class Peer:
 
                         #pošleme ACK paket ako potvrdenie
                         ack_packet = self.create_packet(bytes("", encoding='utf-8'), 1, 0x02, self.sqn, self.ack, 1)
-                        sock.sendto(ack_packet, (self.server_ip, self.server_port))
+                        self.sender_socket.sendto(ack_packet, (self.server_ip, self.server_port))
 
                     else:
                         with self.print_lock:
@@ -262,10 +265,10 @@ class Peer:
 
                         #pošleme NACK paket, vyžiadame si jeho opatovne poslanie
                         nack_packet = self.create_packet(bytes("", encoding='utf-8'), 1, 0x03, self.sqn, self.ack, 1)
-                        sock.sendto(nack_packet, (self.server_ip, self.server_port))
+                        self.sender_socket.sendto(nack_packet, (self.server_ip, self.server_port))
 
                 if response[1] == 0x03:  # NACK, pošli ešte raz paket
-                    sock.sendto(self.last_sent_paket, (target_ip, sending_port))
+                    self.sender_socket.sendto(self.last_sent_paket, (target_ip, sending_port))
                     with self.print_lock:
                         print("Poškodený paket. Posielam znova.")
 
@@ -281,18 +284,18 @@ class Peer:
                         self.listen_sock.close()
                         print("Koniec komunikácie.")
                         break
+
         self.listen_sock.close()
 
 
     def terminate_connection(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender_socket:
-            self.sqn += 1
-            self.expected_sqn = self.sqn
+        self.sqn += 1
+        self.expected_sqn = self.sqn
 
-            fin_packet = self.create_packet(bytes("", encoding='utf-8'), 1, 0x06, self.sqn, self.ack, 1)
-            sender_socket.sendto(fin_packet, (self.server_ip, self.server_port))
-            self.me_closed = True
-            print("Ukončili ste posielanie paketov.")
+        fin_packet = self.create_packet(bytes("", encoding='utf-8'), 1, 0x06, self.sqn, self.ack, 1)
+        self.sender_socket.sendto(fin_packet, (self.server_ip, self.server_port))
+        self.me_closed = True
+        print("Ukončili ste posielanie paketov.")
 
 
     def create_packet(self,data: bytes,packet_id,typ,sqn,ack,total):
@@ -394,8 +397,8 @@ while True:
         break
 
 #TOTO TREBA ZMENIT PRED ODOVZDANIM
-CLIENT_IP = "192.168.1.169" #naša IP
+CLIENT_IP = "192.168.0.105" #naša IP
 
 
 peer = Peer(CLIENT_IP,listening_port,target_ip,sending_port,max_fragment_size)
-
+#to do - prerušiť program pri timeoute
