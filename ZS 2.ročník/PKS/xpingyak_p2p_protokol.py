@@ -1,14 +1,19 @@
+import math
 import socket
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog
+from tkinter.filedialog import askopenfilename
+
 import os
+
+from fsspec.utils import file_size
 
 MAX_FRAGMENT_SIZE = 1463 #daná protokolom
 
 class Peer:
     def __init__(self,ip,port,server_ip,server_port,fragment_size) -> None:
+        self.received_packets = []
         self.sender_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.listen_sock.settimeout(36) #po 36s prestane prijímať pakety a považuje pokus o komunikáciu neúspešný
@@ -24,12 +29,23 @@ class Peer:
         self.last_sent_paket = None #posledne poslaný paket, pre prípad straty
         self.print_lock = threading.Lock()
 
-        self.connected = False #sme pripojený?
+        self.connected = False #sme pripojený
         self.accepted = False #prijatie handshaku druhou stranou
         self.other_closed = False #druhý peer ukončil svoje posielanie
         self.me_closed = False #ja som prerušil posielanie
         self.ready = True #je možný výpis
         self.exit = False #ukončenie programu
+        self.transfer = False #presun pri fragmentácii
+
+
+        #prenos súborov
+        self.received_fragments = {}  # Ukladá prijaté fragmenty podľa SQN
+        self.total_fragments = 0  # Celkový počet fragmentov
+        self.file_name = None  # Meno prijímaného súboru
+        self.file_size = 0
+
+
+
 
         #musí si otvoriť porty na počúvanie
         self.listener_thread = threading.Thread(target=self.receive)
@@ -47,9 +63,6 @@ class Peer:
         self.sender_thread.join()  # Čakáme, kým sa sender vlákno dokončí
         self.establish_thread.join()
 
-        print("program skoncil")
-
-
 
     def establish_connection(self):
         print("Establishing connection ...")
@@ -59,9 +72,10 @@ class Peer:
             self.sqn = 0
             self.ack = 0
 
-            #syn_packet = self.create_packet("", packet_id, 0x00, self.sqn,self.ack, 1)
-            syn_packet = self.create_packet("",0x00,self.sqn,self.ack)
+            self.expected_sqn = self.sqn + 1
+            syn_packet = self.create_packet(b"",0x00,self.sqn,self.ack)
             self.sender_socket.sendto(syn_packet, (self.server_ip, self.server_port))
+            self.last_sent_paket = syn_packet
 
             with self.print_lock:
                 print(f"Odoslaný SYN: SQN={self.sqn}, ACK={self.ack}")
@@ -74,9 +88,6 @@ class Peer:
                 self.sender_socket.close()
                 break
 
-
-
-
     def interface(self):
         while not self.exit:
             if self.connected:
@@ -86,14 +97,29 @@ class Peer:
                         self.change_fragment_size()
 
                         message = input("Zadajte správu: ") #výzva na zadanie správy
-                        self.send_message(message)
+                        if len(message) > self.max_fragment_size:
+                            #treba ju fragmentovat
+                            pass
+                        else:
+                            self.send_message(message) #pošleme ako celok
+
+
                     elif choice == '2':
                         self.change_fragment_size()
 
                         #výzva na výber súboru
-                        print("Tento program zatiaľ nepodporuje túto službu.")
-                        #file_path = input("Zadajte cestu k súboru: ")
-                        #self.send_file(file_path)
+                        file_path = askopenfilename(title="Vyberte súbor")
+                        file_size = os.path.getsize(file_path)
+
+
+                        if file_size > self.max_fragment_size:
+                            #treba fragmentovať
+                            fragmented = self.fragmentation(file_path,self.max_fragment_size)
+                            self.send_fragmented(file_path,file_size,fragmented)
+                        else:
+                            #môže sa poslať celé
+                            pass
+
 
                     elif choice == '3': #poslanie zlého paketu
                         self.change_fragment_size()
@@ -108,7 +134,166 @@ class Peer:
                     else:
                         print("Neplatná voľba, skúste znova.")
 
+    def send_fragmented(self,file_path,file_size,fragmented):
+        #v prvom rade inicializácia
+        self.file_name = os.path.basename(file_path)
+        self.file_size = file_size
+        self.total_fragments = len(fragmented)
 
+        #pošli inicializacny paket
+        self.sqn = self.ack + 1
+        init_paket = self.create_packet(b"",0x07,self.sqn,self.ack,name_length=len(self.file_name),name=self.file_name,file_size=self.file_size,fragment_size=self.max_fragment_size)
+        self.sender_socket.sendto(init_paket, (self.server_ip, self.server_port))
+        self.last_sent_paket = init_paket
+        self.expected_sqn += 1
+
+        self.transfer = False
+
+        while not self.transfer:
+            continue
+
+        print("Začína prenos.")
+
+        window_size = 4
+        base = 0
+        next_seq_num = 0
+        acks_received = [False] * self.total_fragments  # Sledovanie potvrdení
+        timers = {}  # Časovače pre jednotlivé pakety
+
+        print(f"Posielam súbor {self.file_name} o veľkosti {self.file_size} bajtov v {self.total_fragments} fragmentoch.")
+
+        def retransmit(packet_id):
+            """Retransmit a specific packet"""
+            if not acks_received[packet_id]:
+                print(f"Retransmitting fragment {packet_id}")
+                packet = fragmented[packet_id]
+                # Use correct sequence number for retransmission
+                fragment_sqn = packet_id
+                f_packet = self.create_packet(packet, 0x05, fragment_sqn, self.ack, length=len(packet))
+                self.sender_socket.sendto(f_packet, (self.server_ip, self.server_port))
+                self.last_sent_paket = f_packet
+
+                # Reset timer for this packet
+                if packet_id in timers:
+                    timers[packet_id].cancel()
+                timers[packet_id] = threading.Timer(5.0, retransmit, args=[packet_id])
+                timers[packet_id].start()
+
+        # Main transfer loop
+        try:
+            while base < self.total_fragments:
+                # Send new packets within window
+                while next_seq_num < base + window_size and next_seq_num < self.total_fragments:
+                    packet = fragmented[next_seq_num]
+                    # Calculate correct sequence number for each fragment
+                    fragment_sqn = next_seq_num
+                    f_packet = self.create_packet(packet, 0x05, fragment_sqn, self.ack, length=len(packet))
+                    self.sender_socket.sendto(f_packet, (self.server_ip, self.server_port))
+                    self.last_sent_paket = f_packet
+                    print(f"Sent fragment {next_seq_num} with SQN {fragment_sqn}")
+
+                    # Start timer for this packet
+                    if next_seq_num in timers and timers[next_seq_num].is_alive():
+                        timers[next_seq_num].cancel()
+                    timers[next_seq_num] = threading.Timer(5.0, retransmit, args=[next_seq_num])
+                    timers[next_seq_num].start()
+
+                    next_seq_num += 1
+
+                # Wait for ACKs
+                try:
+                    response, _ = self.listen_sock.recvfrom(MAX_FRAGMENT_SIZE)
+                    typ = response[0]
+                    received_sqn = (response[1] << 8) | response[2]
+
+                    # Calculate fragment ID from received SQN
+                    fragment_id = received_sqn
+
+                    if typ == 0x02 and 0 <= fragment_id < self.total_fragments:  # Valid ACK
+                        print(f"ACK received for fragment {fragment_id} (SQN {received_sqn})")
+
+                        # Cancel timer and mark as received
+                        if fragment_id in timers:
+                            timers[fragment_id].cancel()
+                        acks_received[fragment_id] = True
+
+                        # Slide window if possible
+                        while base < self.total_fragments and acks_received[base]:
+                            print(f"Sliding window, base now {base + 1}")
+                            base += 1
+
+                except socket.timeout:
+                    print("Timeout waiting for ACK")
+                    continue
+
+        except Exception as e:
+            print(f"Error during transfer: {e}")
+            # Clean up timers on error
+            for timer in timers.values():
+                if timer.is_alive():
+                    timer.cancel()
+            raise
+
+        # Clean up timers after successful transfer
+        for timer in timers.values():
+            if timer.is_alive():
+                timer.cancel()
+
+        print("File transfer completed")
+
+    def handle_fragment(self, packet):
+        """Spracovanie prijatého fragmentu."""
+        sqn = (packet[1] << 8) | packet[2]
+        length = (packet[5] << 8) | packet[6]
+        data = packet[9:9 + length]
+        crc_received = (packet[7] << 8) | packet[8]
+
+        # Overenie CRC
+        if self.crc16(data) != crc_received:
+            print(f"Fragment {sqn} je poškodený. Vyžiadanie opätovného odoslania.")
+            nack_packet = self.create_packet(b"", 0x03, sqn, self.ack)
+            self.sender_socket.sendto(nack_packet, (self.server_ip, self.server_port))
+            return
+
+        # Ak fragment nie je poškodený, ulož ho
+        self.received_fragments[sqn] = data
+        print(f"Fragment {sqn} prijatý a uložený.")
+
+        # Poslanie ACK pre prijatý fragment
+        ack_packet = self.create_packet(b"", 0x02, sqn, self.ack)
+        self.sender_socket.sendto(ack_packet, (self.server_ip, self.server_port))
+
+        # Skontroluj, či máme všetky fragmenty
+        if len(self.received_fragments) == self.total_fragments:
+            print("Všetky fragmenty prijaté. Skladanie súboru.")
+            self.reassemble_file()
+
+    def reassemble_file(self):
+        """Poskladá prijaté fragmenty do súboru."""
+        if not self.file_name:
+            print("Nie je definované meno súboru. Skladanie súboru zlyhalo.")
+            return
+
+        sorted_fragments = [self.received_fragments[i] for i in sorted(self.received_fragments.keys())]
+        with open(self.file_name, 'wb') as file:
+            for fragment in sorted_fragments:
+                file.write(fragment)
+        print(f"Súbor {self.file_name} úspešne poskladaný a uložený.")
+
+
+
+
+
+
+    def fragmentation(self,file_path,fragment_size=MAX_FRAGMENT_SIZE):
+            fragments = []
+            with open(file_path, 'rb') as file:  # Otvorenie súboru v binárnom režime
+                while True:
+                    chunk = file.read(fragment_size)  # Načítanie fragmentu
+                    if not chunk:
+                        break  # Ak už nie sú dáta, ukončíme čítanie
+                    fragments.append(chunk)
+            return fragments
 
     def change_fragment_size(self):
         valid = False
@@ -164,16 +349,17 @@ class Peer:
             print(f"Odoslaná správa: {message}")
 
 
-    def send_file(self,file_path): #to-do
-        pass
 
 
     def receive(self):
         while not self.exit:
             try:
-                response, address = self.listen_sock.recvfrom(MAX_FRAGMENT_SIZE)
-                sqn = (response[1] << 8) | response[2]
-                ack = (response[3] << 8) | response[4]
+                if not self.transfer:
+                    response, address = self.listen_sock.recvfrom(MAX_FRAGMENT_SIZE)
+                    sqn = (response[1] << 8) | response[2]
+                    ack = (response[3] << 8) | response[4]
+                else:
+                    continue
             except socket.timeout:
                 print("Čas na prijatie komunikačného paketu vypršal. Ukončujem program.")
                 break
@@ -182,9 +368,15 @@ class Peer:
                 if response[0] == 0x00: #ak dostane SYN, prestane posielať svoj SYN a zahaji handshake
                     self.accepted = True
 
+
+
                     #idem poslať SYN-ACK
                     self.ack = sqn + 1
-                    syn_ack_packet = self.create_packet(bytes("", encoding='utf-8'),  0x01, self.sqn, self.ack)
+
+
+
+                    #self.expected_sqn += self.sqn + 1
+                    syn_ack_packet = self.create_packet(b"",  0x01, self.sqn, self.ack)
                     self.sender_socket.sendto(syn_ack_packet, (self.server_ip, self.server_port))
                     with self.print_lock:
                         print(f"Prijatý SYN: SQN={sqn}, ACK={ack}")
@@ -192,33 +384,69 @@ class Peer:
 
 
                 if response[0] == 0x01: #SYN-ACK, pošli zase ACK
-                    self.sqn = ack
-                    self.ack = sqn + 1
+                    if (self.expected_sqn == ack):
+                        print("sedí čislo na syn-ack pakete")
 
-                    ack_packet = self.create_packet(bytes("", encoding='utf-8'), 0x02, self.sqn, self.ack)
-                    self.sender_socket.sendto(ack_packet, (self.server_ip, self.server_port))
-                    with self.print_lock:
-                        print(f"Prijatý SYN-ACK: SQN={sqn}, ACK={ack}")
-                        print(f"Odoslaný ACK: SQN={self.sqn}, ACK={self.ack}")
+                        self.sqn = ack
+                        self.ack = sqn + 1
 
-                    #zahájena komunikácia
-                    self.accepted = True
-                    self.connected = True
-                    print("Zacala komunikacia")
+                        ack_packet = self.create_packet(b"", 0x02, self.sqn, self.ack)
+                        self.sender_socket.sendto(ack_packet, (self.server_ip, self.server_port))
+                        with self.print_lock:
+                            print(f"Prijatý SYN-ACK: SQN={sqn}, ACK={ack}")
+                            print(f"Odoslaný ACK: SQN={self.sqn}, ACK={self.ack}")
+
+                        #zahájena komunikácia
+                        self.accepted = True
+                        self.connected = True
+                        self.listen_sock.settimeout(None)
+                        print("Zacala komunikacia")
 
                 if response[0] == 0x02:
-                    self.connected = True
+                    if (self.expected_sqn == ack):
+                        print("sedí čislo na ack pakete")
+                        self.connected = True
+                        self.listen_sock.settimeout(None)
 
-                    print(f"Prijatý ACK: SQN={sqn}, ACK={ack}")
-                    print("Zacala komunikacia")
+                        print(f"Prijatý ACK: SQN={sqn}, ACK={ack}")
+                        print("Zacala komunikacia")
+                        continue
 
 
             if self.connected: #uz komunikacia s datami/subormi
                 self.ack = (response[1] << 8) | response[2]
                 self.sqn = (response[3] << 8) | response[4]
 
-                if response[0] == 0x06: #FIN paket, pošlem späť ACK paketň
-                    ack_packet = self.create_packet(bytes("", encoding='utf-8'), 0x02, self.sqn, self.ack)
+
+                if response[0] == 0x07: #inicializacný paket, pošli späť ACK
+                    ack_packet = self.create_packet(b"", 0x02, self.sqn, self.ack+1)
+                    self.sender_socket.sendto(ack_packet, (self.server_ip, self.server_port))
+                    print("Prišla výzva na prenos dát. Začína prenos")
+                    #self.transfer = True
+
+                    #rozobrať si ten paket a získať dôležité informácie
+                    name_length = (response[5] << 8) | response[6]
+                    self.file_name = response[7:7+name_length]
+                    poz = 7+name_length
+                    self.file_size = int.from_bytes(response[poz+1:poz+4], byteorder='big')
+                    self.max_fragment_size = (response[poz+4] << 8) | response[poz+5]
+                    print("fragment size: ",self.max_fragment_size)
+                    self.total_fragments = (self.file_size + self.max_fragment_size - 1) // self.max_fragment_size
+
+
+
+                    print(f"Prijímam súbor {self.file_name} o veľkosti {self.file_size} bajtov v {self.total_fragments} fragmentoch.")
+
+
+
+
+                if response[0] == 0x05:
+                    self.handle_fragment(response)
+
+
+
+                if response[0] == 0x06: #FIN paket, pošlem späť ACK paket
+                    ack_packet = self.create_packet(b"", 0x02, self.sqn, self.ack+1)
                     self.sender_socket.sendto(ack_packet, (self.server_ip, self.server_port))
                     #peer2 sa rozhodol, že už nebude posielať pakety, ale my ešte môžeme posielať jemu
 
@@ -238,7 +466,6 @@ class Peer:
 
                 if response[0] == 0x04: #to je správa, nefragmentovaná
                     length = (response[5] << 8) | response[6]
-                    print(length)
                     sprava = response[9:9+length]
                     with self.print_lock:
                         print(f"\nPrijatá správa: {sprava.decode()} (SQN={self.sqn}, ACK={self.ack})")
@@ -249,7 +476,6 @@ class Peer:
                     crc = (response[7] << 8) | response[8]
 
                     new_crc = self.crc16(sprava)
-                    print(crc,new_crc)
                     if new_crc == crc:
                         with self.print_lock:
                             print("Paket je korektný.")
@@ -257,7 +483,7 @@ class Peer:
                                 print("Chcete odoslať (1) správu alebo (2) súbor (nepodporované) alebo (3) nesprávny paket? (zadajte 1 alebo 2, alebo 'q' na ukončenie): ")
 
                         #pošleme ACK paket ako potvrdenie
-                        ack_packet = self.create_packet(bytes("", encoding='utf-8'), 0x02, self.sqn, self.ack)
+                        ack_packet = self.create_packet(b"", 0x02, self.sqn, self.ack)
                         self.sender_socket.sendto(ack_packet, (self.server_ip, self.server_port))
 
                     else:
@@ -278,10 +504,14 @@ class Peer:
                         print("Poškodený paket. Posielam znova.")
 
                 if response[0] == 0x02: #ACK, že prišla správa
-
                     if ack == self.expected_sqn: #prišlo všetko v poriadku
                         with self.print_lock:
-                            print("Správa prišla prijímateľovi správne.")
+                            if self.last_sent_paket is not None:
+                                if self.last_sent_paket[0] == 0x07:
+                                    self.transfer = True
+                                    print("Prijímateľ prijal našu výzvu na prenos dát.")
+                            else:
+                                print("Správa prišla prijímateľovi správne.")
                             self.ready = True
 
                     if self.other_closed:
@@ -344,6 +574,7 @@ class Peer:
             header.append(file_size & 0xFF)
 
             #fragment size
+            print("pridavam fragment size: ",fragment_size)
             header.append((fragment_size >> 8) & 0xFF)
             header.append(fragment_size & 0xFF)
 
@@ -428,4 +659,9 @@ CLIENT_IP = "192.168.0.105" #naša IP
 
 
 peer = Peer(CLIENT_IP,listening_port,target_ip,sending_port,max_fragment_size)
-#to do - prerušiť program pri timeoute
+
+
+
+#pridáme možnosť corruptnut každý n-ty paket aby sme to akože nasimulovali, ale musí to najprv fungovať normálne
+
+
