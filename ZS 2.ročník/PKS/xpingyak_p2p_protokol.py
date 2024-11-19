@@ -9,7 +9,7 @@ import os
 
 from fsspec.utils import file_size
 
-MAX_FRAGMENT_SIZE = 1463 #daná protokolom
+MAX_FRAGMENT_SIZE = 1459 #daná protokolom
 
 class Peer:
     def __init__(self,ip,port,server_ip,server_port,fragment_size) -> None:
@@ -204,7 +204,7 @@ class Peer:
                 try:
                     response, _ = self.listen_sock.recvfrom(MAX_FRAGMENT_SIZE)
                     typ = response[0]
-                    received_sqn = (response[1] << 8) | response[2]
+                    received_sqn = (response[5] << 24) | (response[6] << 16) | (response[7] << 8) | response[8]
 
                     # Calculate fragment ID from received SQN
                     fragment_id = received_sqn
@@ -239,14 +239,15 @@ class Peer:
             if timer.is_alive():
                 timer.cancel()
 
+        self.transfer = False
         print("File transfer completed")
 
     def handle_fragment(self, packet):
         """Spracovanie prijatého fragmentu."""
-        sqn = (packet[1] << 8) | packet[2]
-        length = (packet[5] << 8) | packet[6]
-        data = packet[9:9 + length]
-        crc_received = (packet[7] << 8) | packet[8]
+        sqn = (packet[1] << 24) | (packet[2] << 16) | (packet[3] << 8) | packet[4]
+        length = (packet[9] << 8) | packet[10]
+        data = packet[13:13 + length]
+        crc_received = (packet[11] << 8) | packet[12]
 
         # Overenie CRC
         if self.crc16(data) != crc_received:
@@ -279,7 +280,7 @@ class Peer:
             for fragment in sorted_fragments:
                 file.write(fragment)
         print(f"Súbor {self.file_name} úspešne poskladaný a uložený.")
-
+        print("Chcete odoslať (1) správu alebo (2) súbor (nepodporované) alebo (3) nesprávny paket? (zadajte 1 alebo 2, alebo 'q' na ukončenie): ")
 
 
 
@@ -356,8 +357,8 @@ class Peer:
             try:
                 if not self.transfer:
                     response, address = self.listen_sock.recvfrom(MAX_FRAGMENT_SIZE)
-                    sqn = (response[1] << 8) | response[2]
-                    ack = (response[3] << 8) | response[4]
+                    sqn = (response[1] << 24) | (response[2] << 16) | (response[3] << 8) | response[4]
+                    ack = (response[5] << 24) | (response[6] << 16) | (response[7] << 8) | response[8]
                 else:
                     continue
             except socket.timeout:
@@ -385,7 +386,6 @@ class Peer:
 
                 if response[0] == 0x01: #SYN-ACK, pošli zase ACK
                     if (self.expected_sqn == ack):
-                        print("sedí čislo na syn-ack pakete")
 
                         self.sqn = ack
                         self.ack = sqn + 1
@@ -404,7 +404,6 @@ class Peer:
 
                 if response[0] == 0x02:
                     if (self.expected_sqn == ack):
-                        print("sedí čislo na ack pakete")
                         self.connected = True
                         self.listen_sock.settimeout(None)
 
@@ -414,8 +413,8 @@ class Peer:
 
 
             if self.connected: #uz komunikacia s datami/subormi
-                self.ack = (response[1] << 8) | response[2]
-                self.sqn = (response[3] << 8) | response[4]
+                self.ack = (response[1] << 24) | (response[2] << 16) | (response[3] << 8) | response[4]
+                self.sqn = (response[5] << 24) | (response[6] << 16) | (response[7] << 8) | response[8]
 
 
                 if response[0] == 0x07: #inicializacný paket, pošli späť ACK
@@ -425,15 +424,12 @@ class Peer:
                     #self.transfer = True
 
                     #rozobrať si ten paket a získať dôležité informácie
-                    name_length = (response[5] << 8) | response[6]
-                    self.file_name = response[7:7+name_length]
-                    poz = 7+name_length
+                    name_length = (response[9] << 8) | response[10]
+                    self.file_name = response[11:11+name_length]
+                    poz = 11+name_length
                     self.file_size = int.from_bytes(response[poz+1:poz+4], byteorder='big')
                     self.max_fragment_size = (response[poz+4] << 8) | response[poz+5]
-                    print("fragment size: ",self.max_fragment_size)
                     self.total_fragments = (self.file_size + self.max_fragment_size - 1) // self.max_fragment_size
-
-
 
                     print(f"Prijímam súbor {self.file_name} o veľkosti {self.file_size} bajtov v {self.total_fragments} fragmentoch.")
 
@@ -465,15 +461,15 @@ class Peer:
 
 
                 if response[0] == 0x04: #to je správa, nefragmentovaná
-                    length = (response[5] << 8) | response[6]
-                    sprava = response[9:9+length]
+                    length = (response[9] << 8) | response[10]
+                    sprava = response[13:13+length]
                     with self.print_lock:
                         print(f"\nPrijatá správa: {sprava.decode()} (SQN={self.sqn}, ACK={self.ack})")
                         self.ready = True
 
 
                     #kontrola checksum
-                    crc = (response[7] << 8) | response[8]
+                    crc = (response[11] << 8) | response[12]
 
                     new_crc = self.crc16(sprava)
                     if new_crc == crc:
@@ -491,7 +487,7 @@ class Peer:
                             print("Paket je poškodený.")
 
                         if self.last_sent_paket is not None:
-                            last_packet_length = (self.last_sent_paket[7] << 8) | self.last_sent_paket[8]
+                            last_packet_length = (self.last_sent_paket[9] << 8) | self.last_sent_paket[10]
                             self.ack -= last_packet_length #musíme sa vrátiť na posledný správne odoslaný paket
 
                         #pošleme NACK paket, vyžiadame si jeho opatovne poslanie
@@ -532,7 +528,7 @@ class Peer:
         self.me_closed = True
         print("Ukončili ste posielanie paketov.")
 
-    def create_packet(self,data: bytes,typ,sqn,ack,length=0,name_length=0,name="",file_size=0,fragment_size=1463):
+    def create_packet(self,data: bytes,typ,sqn,ack,length=0,name_length=0,name="",file_size=0,fragment_size=MAX_FRAGMENT_SIZE):
         length = len(data)
 
         crc = self.crc16(data)
@@ -541,10 +537,14 @@ class Peer:
         header.append(typ) #typ paketu
 
         #sqn
+        header.append((sqn >> 24) & 0xFF)  # Najvyšší bajt
+        header.append((sqn >> 16) & 0xFF)
         header.append((sqn >> 8) & 0xFF)  #prvý bajt
         header.append(sqn & 0xFF)   #druhý bajt
 
         #ack
+        header.append((ack >> 24) & 0xFF)  # Najvyšší bajt
+        header.append((ack >> 16) & 0xFF)
         header.append((ack >> 8) & 0xFF)
         header.append(ack & 0xFF)
 
