@@ -42,6 +42,8 @@ class Peer:
         self.file_name = None  # Meno prijímaného súboru
         self.file_size = 0
 
+        self.n_to_corrupt = 0
+
         logging.basicConfig(
             filename="logfile.log",  # Názov log súboru
             level=logging.DEBUG,  # Úroveň logovania (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -139,7 +141,17 @@ class Peer:
                         if file_size > self.max_fragment_size:
                             #treba fragmentovať
                             fragmented = self.fragmentation(file_path,self.max_fragment_size)
+
+                            corrupt = input("Chcete simulovať poškodenie fragmentov? y/n")
+                            if corrupt == 'y' or corrupt == 'Y':
+                                n = int(input("Zvoľte n pre simulovanie poškodenia každého n-tého fragmentu:"))
+                                while n > len(fragmented)-1:
+                                    n = int(input("Zvoľte n pre simulovanie poškodenia každého n-tého fragmentu:"))
+
+                                self.n_to_corrupt = n
+
                             self.send_fragmented(file_path,file_size,fragmented)
+
                         else:
                             #môže sa poslať celé
                             pass
@@ -157,6 +169,24 @@ class Peer:
                         break
                     else:
                         print("Neplatná voľba, skúste znova.")
+
+    def retransmit(self,packet_id):
+        """Retransmit a specific packet"""
+        if not self.acks_received[packet_id]:
+            print(f"Retransmitting fragment {packet_id}")
+            packet = self.fragmented[packet_id]
+            fragment_sqn = packet_id
+            self.log_message('DEBUG', f"Retransmitting fragment {packet_id}, sqn {fragment_sqn} ack {self.ack}")
+            f_packet = self.create_packet(packet, 0x05, fragment_sqn, self.ack, length=len(packet))
+            self.sender_socket.sendto(f_packet, (self.server_ip, self.server_port))
+            self.last_sent_paket = f_packet
+
+            # Reset timer for this packet
+            if packet_id in self.timers:
+                self.timers[packet_id].cancel()
+            self.timers[packet_id] = threading.Timer(5.0, self.retransmit, args=[packet_id])
+            self.timers[packet_id].start()
+
 
     def send_fragmented(self,file_path,file_size,fragmented):
         #v prvom rade inicializácia
@@ -203,23 +233,6 @@ class Peer:
         self.log_message('DEBUG',f"Inicializačný paket má sqn {self.sqn} a ack {self.ack}.")
         print(f"Posielam súbor {self.file_name} o veľkosti {self.file_size} bajtov v {self.total_fragments} fragmentoch.")
 
-        def retransmit(packet_id):
-            """Retransmit a specific packet"""
-            if not self.acks_received[packet_id]:
-                print(f"Retransmitting fragment {packet_id}")
-                packet = fragmented[packet_id]
-                fragment_sqn = packet_id
-                self.log_message('DEBUG',f"Retransmitting fragment {packet_id}, sqn {fragment_sqn} ack {self.ack}")
-                f_packet = self.create_packet(packet, 0x05, fragment_sqn, self.ack, length=len(packet))
-                self.sender_socket.sendto(f_packet, (self.server_ip, self.server_port))
-                self.last_sent_paket = f_packet
-
-                # Reset timer for this packet
-                if packet_id in self.timers:
-                    self.timers[packet_id].cancel()
-                self.timers[packet_id] = threading.Timer(5.0, retransmit, args=[packet_id])
-                self.timers[packet_id].start()
-
         # Main transfer loop
         try:
             while self.base < self.total_fragments:
@@ -229,7 +242,15 @@ class Peer:
                     # Calculate correct sequence number for each fragment
                     fragment_sqn = next_seq_num
                     f_packet = self.create_packet(packet, 0x05, fragment_sqn, self.ack, length=len(packet))
-                    self.sender_socket.sendto(f_packet, (self.server_ip, self.server_port))
+                    if fragment_sqn % self.n_to_corrupt == 0: #každý n-tý fragment na simulovanie korupcie, vytvoríme chybu, pridáme zlé crc
+                        f_copy = f_packet.copy()
+                        f_copy[11] = 0xFF
+                        f_copy[12] = 0xFF
+                        self.sender_socket.sendto(f_copy, (self.server_ip, self.server_port))
+                        print(f"Posielam poškodený paket {fragment_sqn}")
+                    else:
+                        self.sender_socket.sendto(f_packet, (self.server_ip, self.server_port))
+
                     self.last_sent_paket = f_packet
                     self.log_message('DEBUG',f"Sent fragment {next_seq_num} with SQN {fragment_sqn} ACK {self.ack}")
 
@@ -238,7 +259,7 @@ class Peer:
                     # Start timer for this packet
                     if next_seq_num in self.timers and self.timers[next_seq_num].is_alive():
                         self.timers[next_seq_num].cancel()
-                    self.timers[next_seq_num] = threading.Timer(5.0, retransmit, args=[next_seq_num])
+                    self.timers[next_seq_num] = threading.Timer(5.0, self.retransmit, args=[next_seq_num])
                     self.timers[next_seq_num].start()
 
                     next_seq_num += 1
@@ -278,11 +299,11 @@ class Peer:
         crc_received = (packet[11] << 8) | packet[12]
 
         # Overenie CRC
-        """if self.crc16(data) != crc_received:
+        if self.crc16(data) != crc_received:
             self.log_message('ERROR',f"Fragment {sqn} je poškodený. Vyžiadanie opätovného odoslania. Checksum: {self.crc16(data)} Prijatý Checksum: {crc_received}")
             nack_packet = self.create_packet(b"", 0x03, sqn, self.ack)
             self.sender_socket.sendto(nack_packet, (self.server_ip, self.server_port))
-            return"""
+            return
 
         # Ak fragment nie je poškodený, ulož ho
         self.received_fragments[sqn] = data
@@ -479,6 +500,11 @@ class Peer:
                             self.log_message('DEBUG', f"Sliding window, base now {self.base + 1}")
                             self.base += 1
 
+
+                    if response[0] == 0x03:
+                        self.retransmit(fragment_id)
+                        self.log_message('DEBUG',f"Resending broken fragment {fragment_id} with SQN {fragment_id} ACK {self.ack}")
+                        print(f"Resending broken fragment {fragment_id} with SQN {fragment_id}")
                     continue
 
 
