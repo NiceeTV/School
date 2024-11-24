@@ -158,11 +158,12 @@ class Peer:
                     else:
                         print("Neplatná voľba, skúste znova.")
 
-    async def send_fragmented(self,file_path,file_size,fragmented):
+    def send_fragmented(self,file_path,file_size,fragmented):
         #v prvom rade inicializácia
         self.file_name = os.path.basename(file_path)
         self.file_size = file_size
         self.total_fragments = len(fragmented)
+        self.fragmented = fragmented
 
         #pošli inicializacny paket
         self.expected_sqn = self.sqn + 1
@@ -190,10 +191,13 @@ class Peer:
         start = time.time()
 
         window_size = 10
-        base = 0
+
         next_seq_num = 0
-        acks_received = [False] * self.total_fragments  # Sledovanie potvrdení
-        timers = {}  # Časovače pre jednotlivé pakety
+
+        #treba zverejniť inej funkcii
+        self.base = 0
+        self.acks_received = [False] * self.total_fragments  # Sledovanie potvrdení
+        self.timers = {}  # Časovače pre jednotlivé pakety
 
         self.log_message('DEBUG',f"Posielam súbor {self.file_name} o veľkosti {self.file_size} bajtov v {self.total_fragments} fragmentoch.")
         self.log_message('DEBUG',f"Inicializačný paket má sqn {self.sqn} a ack {self.ack}.")
@@ -201,7 +205,7 @@ class Peer:
 
         def retransmit(packet_id):
             """Retransmit a specific packet"""
-            if not acks_received[packet_id]:
+            if not self.acks_received[packet_id]:
                 print(f"Retransmitting fragment {packet_id}")
                 packet = fragmented[packet_id]
                 fragment_sqn = packet_id
@@ -211,16 +215,16 @@ class Peer:
                 self.last_sent_paket = f_packet
 
                 # Reset timer for this packet
-                if packet_id in timers:
-                    timers[packet_id].cancel()
-                timers[packet_id] = threading.Timer(5.0, retransmit, args=[packet_id])
-                timers[packet_id].start()
+                if packet_id in self.timers:
+                    self.timers[packet_id].cancel()
+                self.timers[packet_id] = threading.Timer(5.0, retransmit, args=[packet_id])
+                self.timers[packet_id].start()
 
         # Main transfer loop
         try:
-            while base < self.total_fragments:
+            while self.base < self.total_fragments:
                 # Send new packets within window
-                while next_seq_num < base + window_size and next_seq_num < self.total_fragments:
+                while next_seq_num < self.base + window_size and next_seq_num < self.total_fragments:
                     packet = fragmented[next_seq_num]
                     # Calculate correct sequence number for each fragment
                     fragment_sqn = next_seq_num
@@ -232,57 +236,27 @@ class Peer:
                     print(f"Sent fragment {next_seq_num} with SQN {fragment_sqn}")
 
                     # Start timer for this packet
-                    if next_seq_num in timers and timers[next_seq_num].is_alive():
-                        timers[next_seq_num].cancel()
-                    timers[next_seq_num] = threading.Timer(5.0, retransmit, args=[next_seq_num])
-                    timers[next_seq_num].start()
+                    if next_seq_num in self.timers and self.timers[next_seq_num].is_alive():
+                        self.timers[next_seq_num].cancel()
+                    self.timers[next_seq_num] = threading.Timer(5.0, retransmit, args=[next_seq_num])
+                    self.timers[next_seq_num].start()
 
                     next_seq_num += 1
 
-                # Wait for ACKs
-                try:
-                    response, _ = self.listen_sock.recvfrom(MAX_FRAGMENT_SIZE)
-                    typ = response[0]
-                    received_sqn = (response[5] << 24) | (response[6] << 16) | (response[7] << 8) | response[8]
 
-                    # Calculate fragment ID from received SQN
-                    fragment_id = received_sqn
-
-                    if typ == 0x02 and 0 <= fragment_id < self.total_fragments:  # Valid ACK
-                        self.log_message('DEBUG',f"ACK received for fragment {fragment_id} (SQN {received_sqn})")
-
-                        print(f"ACK received for fragment {fragment_id} (SQN {received_sqn})")
-
-                        fragment_payload = len(fragmented[fragment_id])
-                        self.sqn += fragment_payload
-                        self.expected_sqn = self.sqn
-                        # Cancel timer and mark as received
-                        if fragment_id in timers:
-                            timers[fragment_id].cancel()
-                        acks_received[fragment_id] = True
-
-                        # Slide window if possible
-                        while base < self.total_fragments and acks_received[base]:
-                            self.log_message('DEBUG',f"Sliding window, base now {base + 1}")
-                            base += 1
-
-                except socket.timeout:
-                    self.log_message('ERROR',"Timeout waiting for ACK")
-                    print("Timeout waiting for ACK")
-                    continue
 
         except Exception as e:
             self.log_message('ERROR',f"Error during transfer: {e}")
             with self.print_lock:
                 print(f"Error during transfer: {e}")
             # Clean up timers on error
-            for timer in timers.values():
+            for timer in self.timers.values():
                 if timer.is_alive():
                     timer.cancel()
             raise
 
         # Clean up timers after successful transfer
-        for timer in timers.values():
+        for timer in self.timers.values():
             if timer.is_alive():
                 timer.cancel()
 
@@ -408,12 +382,10 @@ class Peer:
     def receive(self):
         while not self.exit:
             try:
-                if not self.transfer:
-                    response, address = self.listen_sock.recvfrom(MAX_FRAGMENT_SIZE)
-                    sqn = (response[1] << 24) | (response[2] << 16) | (response[3] << 8) | response[4]
-                    ack = (response[5] << 24) | (response[6] << 16) | (response[7] << 8) | response[8]
-                else:
-                    continue
+                response, address = self.listen_sock.recvfrom(MAX_FRAGMENT_SIZE)
+                sqn = (response[1] << 24) | (response[2] << 16) | (response[3] << 8) | response[4]
+                ack = (response[5] << 24) | (response[6] << 16) | (response[7] << 8) | response[8]
+
             except socket.timeout:
                 self.log_message('ERROR',"Čas na prijatie komunikačného paketu vypršal. Ukončujem program.")
                 print("Čas na prijatie komunikačného paketu vypršal. Ukončujem program.")
@@ -484,6 +456,34 @@ class Peer:
             if self.connected: #uz komunikacia s datami/subormi
                 self.ack = (response[1] << 24) | (response[2] << 16) | (response[3] << 8) | response[4]
                 self.sqn = (response[5] << 24) | (response[6] << 16) | (response[7] << 8) | response[8]
+
+
+                if self.transfer:
+                    received_sqn = self.sqn
+                    fragment_id = received_sqn
+                    if response[0] == 0x02 and 0 <= fragment_id < self.total_fragments:  # Valid ACK
+                        self.log_message('DEBUG', f"ACK received for fragment {fragment_id} (SQN {received_sqn})")
+
+                        print(f"ACK received for fragment {fragment_id} (SQN {received_sqn})")
+
+                        fragment_payload = len(self.fragmented[fragment_id])
+                        self.sqn += fragment_payload
+                        self.expected_sqn = self.sqn
+                        # Cancel timer and mark as received
+                        if fragment_id in self.timers:
+                            self.timers[fragment_id].cancel()
+                        self.acks_received[fragment_id] = True
+
+                        # Slide window if possible
+                        while self.base < self.total_fragments and self.acks_received[self.base]:
+                            self.log_message('DEBUG', f"Sliding window, base now {self.base + 1}")
+                            self.base += 1
+
+                    continue
+
+
+
+
 
 
                 if response[0] == 0x07: #inicializacný paket, pošli späť ACK
