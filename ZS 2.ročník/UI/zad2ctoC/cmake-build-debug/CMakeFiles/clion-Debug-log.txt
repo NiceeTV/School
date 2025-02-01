@@ -1,0 +1,33 @@
+"C:\Program Files\JetBrains\CLion 2023.2.2\bin\cmake\win\x64\bin\cmake.exe" -DCMAKE_BUILD_TYPE=Debug "-DCMAKE_MAKE_PROGRAM=C:/Program Files/JetBrains/CLion 2023.2.2/bin/ninja/win/x64/ninja.exe" -G Ninja -S "C:\Users\matze\Documents\GitHub\School\ZS 2.ročník\UI\zad2ctoC" -B "C:\Users\matze\Documents\GitHub\School\ZS 2.ročník\UI\zad2ctoC\cmake-build-debug"
+-- The C compiler identification is GNU 13.1.0
+-- Detecting C compiler ABI info
+CMake Error:
+  Running
+
+   'C:/PROGRA~1/JETBRA~1/CLION2~1.2/bin/ninja/win/x64/ninja.exe' '-C' 'C:/Users/matze/Documents/GitHub/School/ZS 2.ročník/UI/zad2ctoC/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-n8kuip' '-t' 'recompact'
+
+  failed with:
+
+   ninja: fatal: chdir to 'C:/Users/matze/Documents/GitHub/School/ZS 2.rocnφk/UI/zad2ctoC/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-n8kuip' - No such file or directory
+
+
+
+CMake Error:
+  Running
+
+   'C:/PROGRA~1/JETBRA~1/CLION2~1.2/bin/ninja/win/x64/ninja.exe' '-C' 'C:/Users/matze/Documents/GitHub/School/ZS 2.ročník/UI/zad2ctoC/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-n8kuip' '-t' 'restat' 'build.ninja'
+
+  failed with:
+
+   ninja: fatal: chdir to 'C:/Users/matze/Documents/GitHub/School/ZS 2.rocnφk/UI/zad2ctoC/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-n8kuip' - No such file or directory
+
+
+
+CMake Error at C:/Program Files/JetBrains/CLion 2023.2.2/bin/cmake/win/x64/share/cmake-3.26/Modules/CMakeDetermineCompilerABI.cmake:57 (try_compile):
+  Failed to generate test project build system.
+Call Stack (most recent call first):
+  C:/Program Files/JetBrains/CLion 2023.2.2/bin/cmake/win/x64/share/cmake-3.26/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)
+  CMakeLists.txt:2 (project)
+
+
+-- Configuring incomplete, errors occurred!
