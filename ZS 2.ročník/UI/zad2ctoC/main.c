@@ -86,14 +86,9 @@ BOD *create_bod(int x, int y) {
 }
 
 
-size_t hash_xy(int x, int y, size_t capacity) {
-    uint64_t hash = 14695981039346656037ULL; // FNV offset basis
-    hash ^= (uint64_t)x * 0x100000001b3; // FNV prime
-    hash ^= (uint64_t)y * 0x100000001b3;
-    hash ^= (hash >> 32); // Bit shuffle
-    hash *= 0x85ebca6b;    // Murmur-inspired mix
-    hash ^= (hash >> 16);
-    return hash % capacity;
+short int generate_range(int upper, int lower) {
+    short int x = rand() % (upper-(lower)+1) + lower;
+    return x;
 }
 
 
@@ -103,7 +98,7 @@ HASHTABLE *add_hash(HASHTABLE *table, BOD *new_b, SEARCH_RES *res) {
 
     uint64_t hash = (new_b->x * 73856093) ^ (new_b->y * 19349663);
     size_t index = hash % table->capacity;
-
+    //printf("index: %zu",index);
     if (table->children[index] != NULL) {
         //kolízia
         //printf("kolizia\n");
@@ -135,9 +130,8 @@ HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
 
     SEARCH_RES *res = malloc(sizeof(SEARCH_RES));
     while (table->n_of_children <= n) {
-
-        short int x = rand() % (5000-(-5000)+1) - 5000;
-        short int y = rand() % (5000-(-5000)+1) - 5000;
+        short int x = generate_range(5000,-5000);
+        short int y = generate_range(5000,-5000);
 
         BOD *new_b = create_bod(x,y);
         
@@ -151,18 +145,49 @@ HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
 
 HASHTABLE* druhotne_body(int n, HASHTABLE *table) {
     int target = table->n_of_children + n;
+    SEARCH_RES *res = malloc(sizeof(SEARCH_RES));
     while (table->n_of_children != target) {
         //nahodne číslo 0 až n_of_children
 
+        short int x = generate_range(table->n_of_children,0);
+        while (table->children[x] == NULL) {
+            x = generate_range(table->capacity,0);
+            //printf("x: %d",x);
+        }
 
+        int bod_x = table->children[x]->x;
+        int bod_y = table->children[x]->y;
 
+        //printf("nahodny bod: %d,%d. Kapacita: %d/%d\n",bod_x,bod_y, table->n_of_children,table->capacity);
 
+        //generujeme offset
+        int x_offset_1 = -100, x_offset_2 = 100;
+        int y_offset_1 = -100, y_offset_2 = 100;
 
+        if (bod_x + x_offset_1 < -5000) {
+            x_offset_1 = -(bod_x + 5000);
+        }
 
+        if (bod_x + x_offset_2 > 5000) {
+            x_offset_2 = 5000 - bod_x;
+        }
+
+        if (bod_y + y_offset_1 < -5000) {
+            y_offset_1 = -(bod_y + 5000);
+        }
+
+        if (bod_y + y_offset_2 > 5000) {
+            y_offset_2 = 5000 - bod_y;
+        }
+
+        short x_offset = generate_range(x_offset_2,x_offset_1);
+        short y_offset = generate_range(y_offset_2,y_offset_1);
+        int new_x = bod_x + x_offset, new_y = bod_y + y_offset;
+
+        BOD *new_b = create_bod(new_x,new_y);
+
+        table = add_hash(table, new_b,res);
     }
-
-
-
     return table;
 }
 
@@ -190,18 +215,23 @@ int main() {
     printf("Hello, World!\n");
 
     struct timeval start, end;
-    gettimeofday(&start, NULL); // Začiatok merania
 
-    int capacity = 100000;
+    int prvotne = 20000;
+    int druhotne = 20000;
+
+
+    int capacity = prvotne + druhotne;
     HASHTABLE *table = create_table(capacity);
     table = init_table(table);
 
 
-    prvotne_body(100000,table);
+    table = prvotne_body(prvotne,table);
 
     //print_arr(table);
 
+    gettimeofday(&start, NULL); // Začiatok merania
 
+    table = druhotne_body(druhotne,table);
 
     gettimeofday(&end, NULL);
     double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
@@ -211,11 +241,10 @@ int main() {
 }
 
 //GENERATE_BODY_PRVOTNE
-//before optim:
+//before optim: moj C kod
 /*
  * 50000: 1.14s
  * 100000: 4.66s-5.2s
- *
  */
 
 
@@ -244,7 +273,28 @@ int main() {
  */
 
 //GENERATE_BODY_DRUHOTNE
-
+/* pokracujeme dalej v rovnakom kode
+ * dalo by sa v povodnom kode namiesto konverzie na list pri každom generovaní spraviť nejaký
+ *
+ * Zaklad + Dodatocne:
+ *
+ * Python:
+ * 20+20000: 1.84s
+ * 1000+20000: 2.08s
+ * 10000+20000: 4.3s
+ * 20000+20000: 7s-7.4s
+ *
+ * C: generuje sa náhodný index pokial netrafím číslo v zozname, čiže je to efektívnejšie ak je v nom viac čísel, ináč veľa generujem
+ * 20+20000: 0.0035s
+ * 1000+20000: 0.003s
+ * 10000+20000: 0.0025s
+ * 20000+20000: 0.0026s
+ *
+ * 20000+100000: 0.016-0.02s
+ * 50000+100000: 0.025s
+ * 100000+100000: 0.032s
+ *
+ */
 
 
 
