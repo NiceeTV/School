@@ -12,8 +12,8 @@ typedef struct bod  {
 } BOD;
 
 typedef struct hashtable {
-    short int capacity;
-    short int n_of_children;
+    int capacity;
+    int n_of_children;
     BOD **children;
 } HASHTABLE;
 
@@ -34,37 +34,33 @@ BOD* ll_add(BOD* head, BOD* new) {
     return head;
 }
 
-SEARCH_RES ll_search(BOD* head, BOD *searched) {
+SEARCH_RES *ll_search(BOD* head, BOD *searched, SEARCH_RES *res) {
+    res->found = 0;
 
-    SEARCH_RES res;
-    res.found = 0;
+
 
     BOD* act = head;
     while (act->next != NULL) {
         if (act == searched) {
-            res.found = 1;
+            res->found = 1;
             break;
         }
 
         act = act->next;
     }
+
     if (act == searched) {
-        res.found = 1;
+        res->found = 1;
     }
-    res.tail = act;
+
+    res->tail = act;
     return res;
 }
 
-BOD* bring_me_the_head(BOD *head) { //tail v ll
-    BOD *act = head;
-    while (act->next != NULL) {
-        act = act->next;
-    }
-    return act;
-}
 
 
-HASHTABLE *create_table(short n) {
+
+HASHTABLE *create_table(int n) {
     HASHTABLE* new_table = malloc(sizeof(HASHTABLE));
     new_table->capacity = n;
     new_table->n_of_children = 0;
@@ -80,29 +76,42 @@ HASHTABLE *init_table(HASHTABLE *table) {
     return table;
 }
 
+BOD *create_bod(int x, int y) {
+    BOD *new_b = malloc(sizeof(BOD));
+    new_b->x = x;
+    new_b->y = y;
+    new_b->next = NULL;
+
+    return new_b;
+}
+
+
+size_t hash_xy(int x, int y, size_t capacity) {
+    uint64_t hash = 14695981039346656037ULL; // FNV offset basis
+    hash ^= (uint64_t)x * 0x100000001b3; // FNV prime
+    hash ^= (uint64_t)y * 0x100000001b3;
+    hash ^= (hash >> 32); // Bit shuffle
+    hash *= 0x85ebca6b;    // Murmur-inspired mix
+    hash ^= (hash >> 16);
+    return hash % capacity;
+}
 
 
 
 
+HASHTABLE *add_hash(HASHTABLE *table, BOD *new_b, SEARCH_RES *res) {
 
-
-
-
-HASHTABLE *add_hash(HASHTABLE *table, BOD *new_b) {
-
-    //simple hash: &pointer1 + &pointer2 % max a potom kolízie
-
-    //int index = ((unsigned int)&(new_b->x) + ((unsigned int)&(new_b->y))) % table->capacity;
-    int index = (new_b->x * new_b->y) % table->capacity;
+    uint64_t hash = (new_b->x * 73856093) ^ (new_b->y * 19349663);
+    size_t index = hash % table->capacity;
 
     if (table->children[index] != NULL) {
         //kolízia
-        printf("kolizia");
-        //insert head of ll
+        //printf("kolizia\n");
 
-        SEARCH_RES found = ll_search(table->children[index],new_b);
-        if (!found.found) {
-            found.tail->next = new_b;
+        res = ll_search(table->children[index],new_b, res);
+
+        if (!res->found) {
+            res->tail->next = new_b;
             table->n_of_children += 1;
         }
         else {
@@ -121,49 +130,54 @@ HASHTABLE *add_hash(HASHTABLE *table, BOD *new_b) {
 
 
 
-int* prvotne_body(int n,BOD** array, int* array_len) {
+HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
     //nesmu byť rovnaké tie body
-    int i = 0;
-    while (i < n) {
+
+    SEARCH_RES *res = malloc(sizeof(SEARCH_RES));
+    while (table->n_of_children <= n) {
 
         short int x = rand() % (5000-(-5000)+1) - 5000;
         short int y = rand() % (5000-(-5000)+1) - 5000;
 
-        BOD *new_b = malloc(sizeof(BOD));
-        new_b->x = x;
-        new_b->y = y;
+        BOD *new_b = create_bod(x,y);
         
         //cek ci je v zozname
-        int found = 0;
-        for (int j=0;j<*array_len;j++) {
-            if (new_b == array[j]) {
-                found = 1;
-                break;
-            }
+        table = add_hash(table, new_b,res);
+        //printf("Elements: %d/%d\n",table->n_of_children,table->capacity);
+    }
 
-        }
+    return table;
+}
 
-        if (!found) {
-            array[i] = new_b;
-            *array_len += 1;
-            i++;
-        }
-        else {
-            printf("Duplicate found.\n");
-        }
+HASHTABLE* druhotne_body(int n, HASHTABLE *table) {
+    int target = table->n_of_children + n;
+    while (table->n_of_children != target) {
+        //nahodne číslo 0 až n_of_children
+
+
+
+
+
 
     }
 
 
 
-    return NULL;
+    return table;
 }
 
-void print_arr(BOD** array, int* array_len) {
 
-    for (int i=0;i<*array_len;i++) {
-        if (array[i] != NULL) {
-            printf("BOD %d: (%d,%d)\n",i, array[i]->x,array[i]->y);
+
+
+
+
+
+
+void print_arr(HASHTABLE *table) {
+
+    for (int i=0;i<table->n_of_children;i++) {
+        if (table->children[i] != NULL) {
+            printf("BOD %d: (%d,%d)\n",i, table->children[i]->x,table->children[i]->y);
         }
     }
 
@@ -179,14 +193,13 @@ int main() {
     gettimeofday(&start, NULL); // Začiatok merania
 
     int capacity = 100000;
-    int arr_len = 0;
-    int* arr_len_ptr = &arr_len;
+    HASHTABLE *table = create_table(capacity);
+    table = init_table(table);
 
-    BOD** array = malloc(capacity*sizeof(BOD*));
 
-    prvotne_body(100000,array,arr_len_ptr);
+    prvotne_body(100000,table);
 
-    //print_arr(array, arr_len_ptr);
+    //print_arr(table);
 
 
 
@@ -197,16 +210,44 @@ int main() {
 
 }
 
+//GENERATE_BODY_PRVOTNE
 //before optim:
 /*
  * 50000: 1.14s
- * 100000: 4.66s
- *
- *
- *
- *
+ * 100000: 4.66s-5.2s
  *
  */
+
+
+//after hashtable + ll
+/*
+ * Python: set (hashtable)
+ * 50000: 0.04s
+ * 100000: 0.107s
+ *
+ * C: hash funkcia: abs((int)((new_b->x * new_b->y) % table->capacity)) 45% kolízii
+ * 50000: 0.0058s
+ * 100000: 0.01526s
+ *
+ * C: hash funkcia: (new_b->x * 73856093) ^ (new_b->y * 19349663) % capacity 37% kolízií
+ * 50000: 0.0046s
+ * 100000: 0.0105s
+ *
+ *
+ * C: hash funkcia: FNV hash
+ * 50000: 0.005s
+ * 100000: 0.01s
+ *
+ * pre max rýchlosť by to chcelo Perfect Hashing, ale nechcem prísť o pamäť :D, necháme to tak teraz
+ * necháme si tú druhú funkciu, je to viac menej jedno tisícinky sekundy
+ *
+ */
+
+//GENERATE_BODY_DRUHOTNE
+
+
+
+
 
 
 
