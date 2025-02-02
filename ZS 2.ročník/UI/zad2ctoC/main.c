@@ -5,15 +5,18 @@
 #include <sys/time.h>
 
 
+
 typedef struct bod  {
     int x;
     int y;
+    unsigned char assigned;
     struct bod *next;
 } BOD;
 
 typedef struct hashtable {
     int capacity;
     int n_of_children;
+    int *indexes;
     BOD **children;
 } HASHTABLE;
 
@@ -24,20 +27,8 @@ typedef struct seach_res {
 
 
 //operácie LL
-BOD* ll_add(BOD* head, BOD* new) {
-    BOD* act = head;
-    while (act->next != NULL) { //idem na koniec
-        act = act->next;
-    }
-
-    act->next = new;
-    return head;
-}
-
 SEARCH_RES *ll_search(BOD* head, BOD *searched, SEARCH_RES *res) {
     res->found = 0;
-
-
 
     BOD* act = head;
     while (act->next != NULL) {
@@ -57,6 +48,14 @@ SEARCH_RES *ll_search(BOD* head, BOD *searched, SEARCH_RES *res) {
     return res;
 }
 
+BOD *create_bod(int x, int y) {
+    BOD *new_b = malloc(sizeof(BOD));
+    new_b->x = x;
+    new_b->y = y;
+    new_b->assigned = 0; //0 znamená alokovaný, ale nepoužitý, náhrada za NULL
+    new_b->next = NULL;
+    return new_b;
+}
 
 
 
@@ -64,50 +63,51 @@ HASHTABLE *create_table(int n) {
     HASHTABLE* new_table = malloc(sizeof(HASHTABLE));
     new_table->capacity = n;
     new_table->n_of_children = 0;
+    new_table->indexes = malloc(sizeof(int)*n);
     new_table->children = malloc(sizeof(BOD*)*n);
-
     return new_table;
 }
 
 HASHTABLE *init_table(HASHTABLE *table) {
     for (int i=0;i<table->capacity;i++) {
-        table->children[i] = NULL;
+        table->children[i] = create_bod(0,0);
+        table->indexes[i] = 0;
     }
     return table;
 }
 
-BOD *create_bod(int x, int y) {
-    BOD *new_b = malloc(sizeof(BOD));
-    new_b->x = x;
-    new_b->y = y;
-    new_b->next = NULL;
-
-    return new_b;
-}
 
 
 short int generate_range(int upper, int lower) {
-    short int x = rand() % (upper-(lower)+1) + lower;
+    short int x = rand() % (upper-lower+1) + lower; //0 až upper
     return x;
 }
 
 
 
 
-HASHTABLE *add_hash(HASHTABLE *table, BOD *new_b, SEARCH_RES *res) {
-
-    uint64_t hash = (new_b->x * 73856093) ^ (new_b->y * 19349663);
+HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res) {
+    int x = dummy->x;
+    int y = dummy->y;
+    uint64_t hash = (x * 73856093) ^ (y * 19349663);
     size_t index = hash % table->capacity;
     //printf("index: %zu",index);
-    if (table->children[index] != NULL) {
+    if (table->children[index]->assigned == 1) {
         //kolízia
         //printf("kolizia\n");
 
-        res = ll_search(table->children[index],new_b, res);
+        res = ll_search(table->children[index],dummy, res);
 
         if (!res->found) {
+            BOD *new_b = create_bod(x,y);
+            new_b->assigned = 1;
+
             res->tail->next = new_b;
+
+
+            table->indexes[table->n_of_children] = (int)index;
             table->n_of_children += 1;
+
         }
         else {
             printf("DUPLICATE");
@@ -115,7 +115,12 @@ HASHTABLE *add_hash(HASHTABLE *table, BOD *new_b, SEARCH_RES *res) {
 
     }
     else {
-        table->children[index] = new_b;
+        BOD *new = table->children[index];
+        new->x = x;
+        new->y = y;
+        new->assigned = 1;
+
+        table->indexes[table->n_of_children] = (int)index;
         table->n_of_children += 1;
     }
 
@@ -129,14 +134,17 @@ HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
     //nesmu byť rovnaké tie body
 
     SEARCH_RES *res = malloc(sizeof(SEARCH_RES));
+    BOD *dummy = malloc(sizeof(BOD));
     while (table->n_of_children <= n) {
         short int x = generate_range(5000,-5000);
         short int y = generate_range(5000,-5000);
 
-        BOD *new_b = create_bod(x,y);
-        
+        //BOD *new_b = create_bod(x,y);
+        dummy->x = x;
+        dummy->y = y;
+
         //cek ci je v zozname
-        table = add_hash(table, new_b,res);
+        table = add_hash(table, dummy, res);
         //printf("Elements: %d/%d\n",table->n_of_children,table->capacity);
     }
 
@@ -146,47 +154,48 @@ HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
 HASHTABLE* druhotne_body(int n, HASHTABLE *table) {
     int target = table->n_of_children + n;
     SEARCH_RES *res = malloc(sizeof(SEARCH_RES));
+    BOD *dummy = malloc(sizeof(BOD));
+
+    int x_offset_1, x_offset_2;
+    int y_offset_1, y_offset_2;
+
+
     while (table->n_of_children != target) {
         //nahodne číslo 0 až n_of_children
 
-        short int x = generate_range(table->n_of_children,0);
-        while (table->children[x] == NULL) {
-            x = generate_range(table->capacity,0);
-            //printf("x: %d",x);
-        }
 
-        int bod_x = table->children[x]->x;
-        int bod_y = table->children[x]->y;
+        short int x = generate_range(table->n_of_children-1,0);
+        //printf("generated index %d\n",x);
+
+        BOD *selected = table->children[table->indexes[x]];
+
+        register int bod_x = selected->x;
+        register int bod_y = selected->y;
 
         //printf("nahodny bod: %d,%d. Kapacita: %d/%d\n",bod_x,bod_y, table->n_of_children,table->capacity);
-
         //generujeme offset
-        int x_offset_1 = -100, x_offset_2 = 100;
-        int y_offset_1 = -100, y_offset_2 = 100;
 
-        if (bod_x + x_offset_1 < -5000) {
-            x_offset_1 = -(bod_x + 5000);
-        }
+        x_offset_1 = (bod_x - 100 < -5000) ? -5000 - bod_x : -100;
 
-        if (bod_x + x_offset_2 > 5000) {
-            x_offset_2 = 5000 - bod_x;
-        }
+        x_offset_2 = (bod_x + 100 > 5000) ? 5000 - bod_x : 100;
 
-        if (bod_y + y_offset_1 < -5000) {
-            y_offset_1 = -(bod_y + 5000);
-        }
+        y_offset_1 = (bod_y - 100 < -5000) ? -5000 - bod_y : -100;
 
-        if (bod_y + y_offset_2 > 5000) {
-            y_offset_2 = 5000 - bod_y;
-        }
+        y_offset_2 = (bod_y + 100 > 5000) ? 5000 - bod_y : 100;
+
+
 
         short x_offset = generate_range(x_offset_2,x_offset_1);
         short y_offset = generate_range(y_offset_2,y_offset_1);
-        int new_x = bod_x + x_offset, new_y = bod_y + y_offset;
+        register int new_x = bod_x + x_offset, new_y = bod_y + y_offset;
 
-        BOD *new_b = create_bod(new_x,new_y);
+        //BOD *new_b = create_bod(new_x,new_y);
+        dummy->x = new_x;
+        dummy->y = new_y;
 
-        table = add_hash(table, new_b,res);
+
+        table = add_hash(table, dummy,res);
+        table->n_of_children += 1;
     }
     return table;
 }
@@ -216,8 +225,8 @@ int main() {
 
     struct timeval start, end;
 
-    int prvotne = 20000;
-    int druhotne = 20000;
+    int prvotne = 100000;
+    int druhotne = 100000;
 
 
     int capacity = prvotne + druhotne;
@@ -228,6 +237,11 @@ int main() {
     table = prvotne_body(prvotne,table);
 
     //print_arr(table);
+
+    //for (int i=0;i<table->n_of_children;i++) {
+    //    printf("index %d: %d\n",i,table->indexes[i]);
+    //}
+
 
     gettimeofday(&start, NULL); // Začiatok merania
 
@@ -294,7 +308,21 @@ int main() {
  * 50000+100000: 0.025s
  * 100000+100000: 0.032s
  *
+ * BREAKDOWN: 0.035s
+ * generovanie random čísel (3): 0.006s
+ * porovnávanie hraníc: 0.0002s
+ * prve generovanie + offsety: 0.003s
+ * všetko okrem create bod a hash: 0.007s
+ * všetko + vytváranie bodu a bez hashu: 0.011s, trvá kým sa to alokuje
+ * pristupovanie do tabuľky childov som vypol, ostatné zostalo: 0.006s-0.007s
+ * bez prístupov do pamäte a hashu: 0.003s
+ *
+ *
+ * UPGRADE: predalokovanie hashtabulky, zatial sa nerieši LL, ten je rovnaký, ale ušetril som kopu času na alokáciach
+ * Total: (druhotné generovanie): 0.018s skoro 50% ušetrené
+ *
  */
+
 
 
 
