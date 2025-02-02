@@ -3,7 +3,7 @@
 #include <time.h>
 #include <stdint.h>
 #include <sys/time.h>
-
+#include <math.h>
 
 
 typedef struct bod  {
@@ -29,21 +29,17 @@ typedef struct seach_res {
 //operácie LL
 SEARCH_RES *ll_search(BOD* head, BOD *searched, SEARCH_RES *res) {
     res->found = 0;
-
     BOD* act = head;
     while (act->next != NULL) {
         if (act == searched) {
             res->found = 1;
             break;
         }
-
         act = act->next;
     }
-
     if (act == searched) {
         res->found = 1;
     }
-
     res->tail = act;
     return res;
 }
@@ -56,8 +52,6 @@ BOD *create_bod(int x, int y) {
     new_b->next = NULL;
     return new_b;
 }
-
-
 
 HASHTABLE *create_table(int n) {
     HASHTABLE* new_table = malloc(sizeof(HASHTABLE));
@@ -76,12 +70,53 @@ HASHTABLE *init_table(HASHTABLE *table) {
     return table;
 }
 
-
-
 short int generate_range(int upper, int lower) {
     short int x = rand() % (upper-lower+1) + lower; //0 až upper
     return x;
 }
+
+float calculate_distance(BOD *bod1, BOD *bod2) {
+    //akože dá sa používať štvrocová vzdialenosť, ale to dáme ako potom improvement
+    //použijeme klasiku s odmocninou
+
+    float distance = pow(bod2->x-bod1->x,2) + pow(bod2->y-bod1->y,2);
+
+    return sqrtf(distance);
+}
+
+
+float **create_matica_vzd(HASHTABLE *table) {
+
+    //napadla ma optimalizácia: ak vypočítam, že vzdialenosť je viac ako 500, tak to ani nedám do matice, ďalšie ušetrené miesto
+
+    int n = table->n_of_children;
+    float **matica_vzd = malloc(sizeof(float*)*n);
+
+
+
+    //rovno spravím dolny trojuholnik
+    for (int i=0;i<n;i++) {
+        float *row = malloc(sizeof(float)*n);
+        for (int j=0;j<=i;j++) {
+            if (i==j) {
+                row[j] = 10000; //random hodnota, aj tak ju nebudem cekovat
+                continue;
+            }
+
+            float distance = calculate_distance(table->children[table->indexes[j]],table->children[table->indexes[i]]);
+
+            printf("%g ",distance);
+            row[j] = distance;
+
+        }
+        matica_vzd[i] = row;
+        printf("\n");
+    }
+
+
+    return matica_vzd;
+}
+
 
 
 
@@ -91,9 +126,7 @@ HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res) {
     int y = dummy->y;
     uint64_t hash = (x * 73856093) ^ (y * 19349663);
     size_t index = hash % table->capacity;
-    //printf("index: %zu",index);
-    if (table->children[index]->assigned == 1) {
-        //kolízia
+    if (table->children[index]->assigned == 1) { //kolízia
         //printf("kolizia\n");
 
         res = ll_search(table->children[index],dummy, res);
@@ -101,18 +134,13 @@ HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res) {
         if (!res->found) {
             BOD *new_b = create_bod(x,y);
             new_b->assigned = 1;
-
             res->tail->next = new_b;
-
-
             table->indexes[table->n_of_children] = (int)index;
             table->n_of_children += 1;
-
         }
         else {
             printf("DUPLICATE");
         }
-
     }
     else {
         BOD *new = table->children[index];
@@ -123,11 +151,8 @@ HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res) {
         table->indexes[table->n_of_children] = (int)index;
         table->n_of_children += 1;
     }
-
     return table;
 }
-
-
 
 
 HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
@@ -139,15 +164,12 @@ HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
         short int x = generate_range(5000,-5000);
         short int y = generate_range(5000,-5000);
 
-        //BOD *new_b = create_bod(x,y);
         dummy->x = x;
         dummy->y = y;
 
         //cek ci je v zozname
         table = add_hash(table, dummy, res);
-        //printf("Elements: %d/%d\n",table->n_of_children,table->capacity);
     }
-
     return table;
 }
 
@@ -163,27 +185,17 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table) {
     while (table->n_of_children != target) {
         //nahodne číslo 0 až n_of_children
 
-
         short int x = generate_range(table->n_of_children-1,0);
-        //printf("generated index %d\n",x);
-
         BOD *selected = table->children[table->indexes[x]];
 
         register int bod_x = selected->x;
         register int bod_y = selected->y;
 
-        //printf("nahodny bod: %d,%d. Kapacita: %d/%d\n",bod_x,bod_y, table->n_of_children,table->capacity);
         //generujeme offset
-
         x_offset_1 = (bod_x - 100 < -5000) ? -5000 - bod_x : -100;
-
         x_offset_2 = (bod_x + 100 > 5000) ? 5000 - bod_x : 100;
-
         y_offset_1 = (bod_y - 100 < -5000) ? -5000 - bod_y : -100;
-
         y_offset_2 = (bod_y + 100 > 5000) ? 5000 - bod_y : 100;
-
-
 
         short x_offset = generate_range(x_offset_2,x_offset_1);
         short y_offset = generate_range(y_offset_2,y_offset_1);
@@ -193,9 +205,8 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table) {
         dummy->x = new_x;
         dummy->y = new_y;
 
-
         table = add_hash(table, dummy,res);
-        table->n_of_children += 1;
+
     }
     return table;
 }
@@ -208,13 +219,11 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table) {
 
 
 void print_arr(HASHTABLE *table) {
-
     for (int i=0;i<table->n_of_children;i++) {
-        if (table->children[i] != NULL) {
-            printf("BOD %d: (%d,%d)\n",i, table->children[i]->x,table->children[i]->y);
+        if (table->children[table->indexes[i]]) {
+            printf("BOD %d: (%d,%d)\n",i, table->children[table->indexes[i]]->x,table->children[table->indexes[i]]->y);
         }
     }
-
 }
 
 
@@ -225,8 +234,8 @@ int main() {
 
     struct timeval start, end;
 
-    int prvotne = 100000;
-    int druhotne = 100000;
+    int prvotne = 5;
+    int druhotne = 5;
 
 
     int capacity = prvotne + druhotne;
@@ -235,17 +244,14 @@ int main() {
 
 
     table = prvotne_body(prvotne,table);
+    table = druhotne_body(druhotne,table);
 
-    //print_arr(table);
-
-    //for (int i=0;i<table->n_of_children;i++) {
-    //    printf("index %d: %d\n",i,table->indexes[i]);
-    //}
-
-
+    print_arr(table);
+    printf("heo");
     gettimeofday(&start, NULL); // Začiatok merania
 
-    table = druhotne_body(druhotne,table);
+
+    create_matica_vzd(table);
 
     gettimeofday(&end, NULL);
     double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
@@ -321,10 +327,32 @@ int main() {
  * UPGRADE: predalokovanie hashtabulky, zatial sa nerieši LL, ten je rovnaký, ale ušetril som kopu času na alokáciach
  * Total: (druhotné generovanie): 0.018s skoro 50% ušetrené
  *
+ * Benchmark:
+ * 20000+20000: 0.0011s
+ * 50000+50000: 0.005s cca
+ * 50000+100000: 0.012s
+ * 100000+100000: 0.018s
  */
 
 
+//CALCULATE DISTANCE
 
+
+
+//CREATE_MATICA_VZD
+/*
+ *
+ * alokovanie polovice matice bez diagonaly:
+ * 10+10: 0.0015s
+ * 10000+10000: 0.5s
+ * 20000+20000: 2s cca
+ *
+ * pocitanie vzdialenosti + alokacia:
+ *
+ * TO-DO: premenit hash table na tabulku normálnu predtým ako budem robiť maticu_vzd, kvoli nedostupnym prvkom v LL
+ *
+ *
+ */
 
 
 
