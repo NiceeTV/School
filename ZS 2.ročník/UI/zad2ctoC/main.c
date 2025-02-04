@@ -16,7 +16,6 @@ typedef struct bod  {
 typedef struct hashtable {
     int capacity;
     int n_of_children;
-    int *indexes;
     BOD **children;
 } HASHTABLE;
 
@@ -31,7 +30,7 @@ SEARCH_RES *ll_search(BOD* head, BOD *searched, SEARCH_RES *res) {
     res->found = 0;
     BOD* act = head;
     while (act->next != NULL) {
-        if (act == searched) {
+        if (act->x == searched->x && act->y == searched->y) {
             res->found = 1;
             break;
         }
@@ -57,7 +56,6 @@ HASHTABLE *create_table(int n) {
     HASHTABLE* new_table = malloc(sizeof(HASHTABLE));
     new_table->capacity = n;
     new_table->n_of_children = 0;
-    new_table->indexes = malloc(sizeof(int)*n);
     new_table->children = malloc(sizeof(BOD*)*n);
     return new_table;
 }
@@ -65,10 +63,55 @@ HASHTABLE *create_table(int n) {
 HASHTABLE *init_table(HASHTABLE *table) {
     for (int i=0;i<table->capacity;i++) {
         table->children[i] = create_bod(0,0);
-        table->indexes[i] = 0;
     }
     return table;
 }
+
+HASHTABLE *clear_table(HASHTABLE *table) {
+    //musíme dealokovať childov, aby sme mohli priradiť nových, môžme to spraviť cez to extracted, aby sme sa vyhli dealokácii LL
+    for (int i=0;i<table->capacity;i++) {
+        if (table->children[i]->assigned == 1) {
+            if (table->children[i]->next != NULL) {
+                //dealokovanie LL okrem head
+
+                BOD *current = table->children[i]->next; //začneme od druhého prvku
+                BOD *next_node;
+
+                while (current != NULL) {
+                    next_node = current->next;
+                    free(current);
+                    current = next_node;
+
+                }
+                table->children[i]->next = NULL;
+
+            }
+            table->children[i]->assigned = 0;
+        }
+    }
+
+    return table;
+}
+
+
+BOD *extract_items_from_hs(HASHTABLE *table, BOD *extracted, int last_n) {
+
+    int index = 0;
+    for (int i=0;i<table->capacity;i++) {
+        BOD *selected = table->children[i];
+        if (selected->assigned == 1) { //ináč nás to nezaujíma
+            while (selected != NULL) {
+                extracted[last_n+index] = *selected;
+                index++;
+                selected = selected->next;
+            }
+        }
+    }
+    printf("index %d\n",index);
+    return extracted;
+}
+
+
 
 short int generate_range(int upper, int lower) {
     short int x = rand() % (upper-lower+1) + lower; //0 až upper
@@ -85,7 +128,7 @@ float calculate_distance(BOD *bod1, BOD *bod2) {
 }
 
 
-float **create_matica_vzd(HASHTABLE *table) {
+float **create_matica_vzd(HASHTABLE *table, BOD **extracted) {
 
     //napadla ma optimalizácia: ak vypočítam, že vzdialenosť je viac ako 500, tak to ani nedám do matice, ďalšie ušetrené miesto
 
@@ -103,7 +146,7 @@ float **create_matica_vzd(HASHTABLE *table) {
                 continue;
             }
 
-            float distance = calculate_distance(table->children[table->indexes[j]],table->children[table->indexes[i]]);
+            float distance = calculate_distance(extracted[j],extracted[i]);
 
             printf("%g ",distance);
             row[j] = distance;
@@ -117,40 +160,69 @@ float **create_matica_vzd(HASHTABLE *table) {
     return matica_vzd;
 }
 
-
-
-
-
-HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res) {
+HASHTABLE *add_hash_exp(HASHTABLE *table, BOD *dummy, SEARCH_RES *res) { //chceme ísť pod 0.035s celkom
     int x = dummy->x;
     int y = dummy->y;
     uint64_t hash = (x * 73856093) ^ (y * 19349663);
     size_t index = hash % table->capacity;
-    if (table->children[index]->assigned == 1) { //kolízia
-        //printf("kolizia\n");
 
+    if (table->children[index]->assigned == 1) { //kolízia
         res = ll_search(table->children[index],dummy, res);
 
+
         if (!res->found) {
-            BOD *new_b = create_bod(x,y);
+
+        }
+
+
+
+    }
+    else { //0.026s cca, čiže pridáva 0.015
+
+
+    }
+
+
+    return table;
+}
+
+
+HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res, BOD *extracted) {
+    int x = dummy->x;
+    int y = dummy->y;
+    int success = 0;
+    BOD *new_b = NULL;
+    uint64_t hash = (x * 73856093) ^ (y * 19349663);
+    size_t index = hash % table->capacity;
+
+    //printf("adding numbers\n");
+    if (table->children[index]->assigned == 1) { //kolízia
+        res = ll_search(table->children[index],dummy, res);
+        if (!res->found) {
+            new_b = create_bod(x,y);
             new_b->assigned = 1;
             res->tail->next = new_b;
-            table->indexes[table->n_of_children] = (int)index;
             table->n_of_children += 1;
+            success = 1;
         }
-        else {
-            printf("DUPLICATE");
-        }
+        //deleted DUPLICATED print
+
     }
     else {
-        BOD *new = table->children[index];
-        new->x = x;
-        new->y = y;
-        new->assigned = 1;
+        //printf("assigned\n");
+        new_b = table->children[index];
+        new_b->x = x;
+        new_b->y = y;
+        new_b->assigned = 1;
 
-        table->indexes[table->n_of_children] = (int)index;
         table->n_of_children += 1;
+        success = 1;
     }
+
+    if (success && extracted != NULL) {
+        extracted[table->n_of_children] = *new_b;
+    }
+
     return table;
 }
 
@@ -160,7 +232,7 @@ HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
 
     SEARCH_RES *res = malloc(sizeof(SEARCH_RES));
     BOD *dummy = malloc(sizeof(BOD));
-    while (table->n_of_children <= n) {
+    while (table->n_of_children != n) {
         short int x = generate_range(5000,-5000);
         short int y = generate_range(5000,-5000);
 
@@ -168,12 +240,12 @@ HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
         dummy->y = y;
 
         //cek ci je v zozname
-        table = add_hash(table, dummy, res);
+        table = add_hash(table, dummy, res, NULL);
     }
     return table;
 }
 
-HASHTABLE* druhotne_body(int n, HASHTABLE *table) {
+HASHTABLE* druhotne_body(int n, HASHTABLE *table, BOD *extracted) {
     int target = table->n_of_children + n;
     SEARCH_RES *res = malloc(sizeof(SEARCH_RES));
     BOD *dummy = malloc(sizeof(BOD));
@@ -184,12 +256,12 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table) {
 
     while (table->n_of_children != target) {
         //nahodne číslo 0 až n_of_children
-
         short int x = generate_range(table->n_of_children-1,0);
-        BOD *selected = table->children[table->indexes[x]];
+        BOD selected = extracted[x]; //ušetrené 0.007s? 0.018s->0.011s bez alokácie
 
-        register int bod_x = selected->x;
-        register int bod_y = selected->y;
+        register int bod_x = selected.x;
+        register int bod_y = selected.y;
+
 
         //generujeme offset
         x_offset_1 = (bod_x - 100 < -5000) ? -5000 - bod_x : -100;
@@ -201,11 +273,11 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table) {
         short y_offset = generate_range(y_offset_2,y_offset_1);
         register int new_x = bod_x + x_offset, new_y = bod_y + y_offset;
 
-        //BOD *new_b = create_bod(new_x,new_y);
         dummy->x = new_x;
         dummy->y = new_y;
 
-        table = add_hash(table, dummy,res);
+
+        table = add_hash(table, dummy,res,extracted); //toto zase pridá veľa sekúnd a preváži zisk vyššie
 
     }
     return table;
@@ -220,9 +292,26 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table) {
 
 void print_arr(HASHTABLE *table) {
     for (int i=0;i<table->n_of_children;i++) {
-        if (table->children[table->indexes[i]]) {
-            printf("BOD %d: (%d,%d)\n",i, table->children[table->indexes[i]]->x,table->children[table->indexes[i]]->y);
+        if (table->children[i]->assigned == 1) {
+
+            if (table->children[i]->next == NULL) {
+                printf("BOD %d: (%d,%d)\n",i, table->children[i]->x,table->children[i]->y);
+            }
+            else {
+                printf("Printing LL:\n");
+                BOD *act = table->children[i];
+                while (act->next != NULL) {
+                    printf(": %d,%d\n",act->x,act->y);
+                    act = act->next;
+                }
+                printf(": %d,%d\n",act->x,act->y);
+                printf("End of LL\n");
+
+            }
+
+
         }
+
     }
 }
 
@@ -234,29 +323,54 @@ int main() {
 
     struct timeval start, end;
 
-    int prvotne = 5;
-    int druhotne = 5;
+    int prvotne = 5000;
+    int druhotne = 5000;
 
 
     int capacity = prvotne + druhotne;
     HASHTABLE *table = create_table(capacity);
     table = init_table(table);
 
+    BOD *extracted = malloc(sizeof(BOD)*capacity);
+
 
     table = prvotne_body(prvotne,table);
-    table = druhotne_body(druhotne,table);
+    //print_arr(table);
+    printf("1 checkpoint\n");
 
-    print_arr(table);
-    printf("heo");
+    extracted = extract_items_from_hs(table,extracted,0);
+    printf("2 checkpoint\n");
+    table = clear_table(table);
+    printf("3 checkpoint\n");
+    //print_arr(table);
+
+
     gettimeofday(&start, NULL); // Začiatok merania
 
+    table = druhotne_body(druhotne,table, extracted);
+    printf("4 checkpoint\n");
 
-    create_matica_vzd(table);
+    extracted = extract_items_from_hs(table,extracted,prvotne);
+
+
+
+
+
+    //print_arr(table);
+    //printf("heo");
+
+
+
+    //BOD **extracted = extract_items_from_hs(table);
 
     gettimeofday(&end, NULL);
     double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
 
     printf("Time Elapsed: %fs",elapsed);
+
+
+
+
 
 }
 
@@ -331,7 +445,18 @@ int main() {
  * 20000+20000: 0.0011s
  * 50000+50000: 0.005s cca
  * 50000+100000: 0.012s
- * 100000+100000: 0.018s
+ * 100000+100000: 0.018s /maybe false lebo som tam mal riadok, kde sa pripočítal n_of_children, čiže tam bola polovica operácii len
+ *
+ *
+ * ZMENA: odstránil som indexy na komplet, spravil som extrahovanie hodnot aj z kolízii ale čas podobný, ideme sa na to pozrieť
+ * všetko okrem hashu: 0.01s cca
+ * čiže hash je okolo: 0.025s cca čo je dosť
+ *
+ *
+ * CISTENIE A RECYKLACIA HASHTABLE: vyčistí sa hashtable a vie sa do nej vkladať druhotne generovanie, problem je, že sa beru nahodne body len z prvej generácie a nepridávajú sa nové
+ * body z druhotnej generácie, ale to sa dá pohode fixnut asi, zatial mám vzácny error raz za 1000 zapnutí a neviem kde
+ *
+ * zatial: 100000+100000: 0.025s cca, niekedy menej niekedy viac, ale zrazil som to trochu, tým že som recykloval hashtable a mal som menej kolízií
  */
 
 
@@ -349,7 +474,7 @@ int main() {
  *
  * pocitanie vzdialenosti + alokacia:
  *
- * TO-DO: premenit hash table na tabulku normálnu predtým ako budem robiť maticu_vzd, kvoli nedostupnym prvkom v LL
+ * TO-DO: opravit druhotne vyberanie z existujucich prvkov
  *
  *
  */
