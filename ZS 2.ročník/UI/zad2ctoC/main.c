@@ -24,6 +24,17 @@ typedef struct seach_res {
     BOD* tail;
 } SEARCH_RES;
 
+typedef struct bod_simple {
+    short x;
+    short y;
+} BOD_SIMPLE;
+
+typedef struct cluster {
+    BOD_SIMPLE *children;
+    int n_of_children;
+} CLUSTER;
+
+
 
 //operácie LL
 SEARCH_RES *ll_search(BOD* head, BOD *searched, SEARCH_RES *res) {
@@ -94,6 +105,40 @@ HASHTABLE *clear_table(HASHTABLE *table) {
 }
 
 
+void free_table(HASHTABLE *table) {
+    //musíme dealokovať childov, aby sme mohli priradiť nových, môžme to spraviť cez to extracted, aby sme sa vyhli dealokácii LL
+    for (int i=0;i<table->capacity;i++) {
+        //dealokovanie LL okrem head
+        BOD *current = table->children[i]; //začneme od druhého prvku
+        BOD *next_node;
+
+        if (current->next != NULL) {
+            BOD *act = current;
+            //while (act->next != NULL) {
+                next_node = act->next;
+                free(act);
+                act = next_node;
+            //}
+        }
+        else {
+            free(table->children[i]);
+        }
+
+
+
+
+
+    }
+    free(table->children);
+    free(table);
+
+}
+
+
+
+
+
+
 BOD *extract_items_from_hs(HASHTABLE *table, BOD *extracted, int last_n) {
 
     int index = 0;
@@ -118,72 +163,40 @@ short int generate_range(int upper, int lower) {
     return x;
 }
 
-float calculate_distance(BOD *bod1, BOD *bod2) {
-    //akože dá sa používať štvrocová vzdialenosť, ale to dáme ako potom improvement
-    //použijeme klasiku s odmocninou
+static inline uint16_t calculate_distance(BOD *bod1, BOD *bod2) {
+    //dáme rovno štvorcovú vzdialenosť
+    const int diff1 = bod2->x-bod1->x;
+    const int diff2 = bod2->y-bod1->y;
 
-    float distance = pow(bod2->x-bod1->x,2) + pow(bod2->y-bod1->y,2);
+    const int distance = diff1*diff1 + diff2*diff2;
+    return (distance > 2500) ? 0 : distance;
+}
 
-    return sqrtf(distance);
+float calculate_distance_simple(BOD_SIMPLE bod1, BOD_SIMPLE bod2) {
+    float distance = pow(bod2.x-bod1.x,2) + pow(bod2.y-bod1.y,2);
+    return distance;
 }
 
 
-float **create_matica_vzd(HASHTABLE *table, BOD **extracted) {
-
+uint16_t *create_matica_vzd(int capacity, BOD *extracted) {
     //napadla ma optimalizácia: ak vypočítam, že vzdialenosť je viac ako 500, tak to ani nedám do matice, ďalšie ušetrené miesto
-
-    int n = table->n_of_children;
-    float **matica_vzd = malloc(sizeof(float*)*n);
-
+    uint64_t n = capacity;
+    uint64_t size = (n*n-n)/2; //počet prvkov dolneho trojuholníku mínus diagonála
 
 
-    //rovno spravím dolny trojuholnik
+    uint16_t *matica_vzd = malloc(sizeof(uint16_t)*size);
+
+
+    int index = 0; //rovno spravím dolny trojuholnik, bez diagonaly
     for (int i=0;i<n;i++) {
-        float *row = malloc(sizeof(float)*n);
-        for (int j=0;j<=i;j++) {
-            if (i==j) {
-                row[j] = 10000; //random hodnota, aj tak ju nebudem cekovat
-                continue;
-            }
-
-            float distance = calculate_distance(extracted[j],extracted[i]);
-
-            printf("%g ",distance);
-            row[j] = distance;
-
+        BOD *i1 = &extracted[i];
+        for (int j=0;j<i;j++) {
+            uint64_t distance = calculate_distance(i1,&extracted[j]);
+            matica_vzd[index++] = distance;
         }
-        matica_vzd[i] = row;
-        printf("\n");
     }
-
-
+    printf("index %d\n",index);
     return matica_vzd;
-}
-
-HASHTABLE *add_hash_exp(HASHTABLE *table, BOD *dummy, SEARCH_RES *res) { //chceme ísť pod 0.035s celkom
-    int x = dummy->x;
-    int y = dummy->y;
-    uint64_t hash = (x * 73856093) ^ (y * 19349663);
-    size_t index = hash % table->capacity;
-
-    if (table->children[index]->assigned == 1) { //kolízia
-        res = ll_search(table->children[index],dummy, res);
-
-
-        if (!res->found) {
-
-        }
-
-
-
-    }
-    else { //0.026s cca, čiže pridáva 0.015
-
-
-    }
-
-
-    return table;
 }
 
 
@@ -323,8 +336,8 @@ int main() {
 
     struct timeval start, end;
 
-    int prvotne = 5000;
-    int druhotne = 5000;
+    int prvotne = 20;
+    int druhotne = 20000;
 
 
     int capacity = prvotne + druhotne;
@@ -334,34 +347,21 @@ int main() {
     BOD *extracted = malloc(sizeof(BOD)*capacity);
 
 
-    table = prvotne_body(prvotne,table);
-    //print_arr(table);
-    printf("1 checkpoint\n");
+    table = prvotne_body(prvotne,table); //prvotne body
+    extracted = extract_items_from_hs(table,extracted,0); //extrakcia po prvom generovaní
+    table = clear_table(table); //recyklácia tabuľky
 
-    extracted = extract_items_from_hs(table,extracted,0);
-    printf("2 checkpoint\n");
-    table = clear_table(table);
-    printf("3 checkpoint\n");
-    //print_arr(table);
+    table = druhotne_body(druhotne,table, extracted); //druhotne generovanie
+    extracted = extract_items_from_hs(table,extracted,prvotne); //extrakcia, finalne body
 
+    free_table(table);
 
     gettimeofday(&start, NULL); // Začiatok merania
 
-    table = druhotne_body(druhotne,table, extracted);
-    printf("4 checkpoint\n");
-
-    extracted = extract_items_from_hs(table,extracted,prvotne);
+    create_matica_vzd(capacity,extracted);
 
 
 
-
-
-    //print_arr(table);
-    //printf("heo");
-
-
-
-    //BOD **extracted = extract_items_from_hs(table);
 
     gettimeofday(&end, NULL);
     double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
@@ -461,6 +461,27 @@ int main() {
 
 
 //CALCULATE DISTANCE
+/*
+ * Zmeny: používam štvorcovú vzdialenosť
+ * používame int16 na vzdialenosti, ak je to > 2500, tak pošle 0
+ * odstránil som pow a sqrt, trvajú príliš dlho a tým, že chcem len **2, tak je to nepotrebné, to zrýchlilo veľmi moc
+ *
+ * Teraz: 16000+16000: 2.9s
+ *
+ * Zmena parametrov na pointery, aby sa nerobili kópie vo funkcii, zbytočný čas
+ *
+ * Pointery+používam len int:
+ * 16000+16000: 2.08s-2.2s
+ *
+ * pridanie "inline" slovíčka, kompilátor vloží kód priamo do funkcie, naštudovať, optimalizácia
+ * použitie const, pomáha kompilátoru optimalizovať
+ *
+ * 16000+16000: 2.05s-2.1s minimálne zlepšenie, pre create_matica aj s týmto, nie len čas výpočtu
+ * 20+20000 (s týmto budem robiť): 0.8s
+ *
+ *
+ */
+
 
 
 
@@ -473,8 +494,12 @@ int main() {
  * 20000+20000: 2s cca
  *
  * pocitanie vzdialenosti + alokacia:
+ * pokračovanie od calc_dist:
+ * bolo:
+ * 16000+16000: 2.05s-2.1s
  *
- * TO-DO: opravit druhotne vyberanie z existujucich prvkov
+ * uloženie i-teho prvku a znova použitie v j-cykle: (geniálne)
+ * 16000+16000: 1.9s-2s fajný improvement kvôli takému niečomu
  *
  *
  */
