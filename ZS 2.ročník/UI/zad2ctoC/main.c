@@ -32,6 +32,7 @@ typedef struct bod_simple {
 typedef struct cluster {
     BOD_SIMPLE *children;
     int n_of_children;
+    int capacity;
 } CLUSTER;
 
 typedef struct cluster_list {
@@ -43,7 +44,7 @@ typedef struct cluster_list {
 typedef struct heap_child {
     int i;
     int j;
-    uint16_t dist;
+    int dist;
 } HEAP_CHILD;
 
 
@@ -100,28 +101,25 @@ HASHTABLE *init_table(HASHTABLE *table) {
 HASHTABLE *clear_table(HASHTABLE *table) {
     //musíme dealokovať childov, aby sme mohli priradiť nových, môžme to spraviť cez to extracted, aby sme sa vyhli dealokácii LL
     for (int i=0;i<table->capacity;i++) {
-        if (table->children[i]->assigned == 1) {
-            if (table->children[i]->next != NULL) {
-                //dealokovanie LL okrem head
+        if (table->children[i] != NULL && table->children[i]->assigned == 1) {
 
-                BOD *current = table->children[i]->next; //začneme od druhého prvku
-                BOD *next_node;
+            //dealokovanie LL okrem head
 
-                while (current != NULL) {
-                    next_node = current->next;
-                    free(current);
-                    current = next_node;
+            BOD *current = table->children[i]->next; //začneme od druhého prvku
+            BOD *next_node;
 
-                }
-                table->children[i]->next = NULL;
+            while (current != NULL) {
+                next_node = current->next;
+                free(current);
+                current = next_node;
 
             }
+            table->children[i]->next = NULL;
             table->children[i]->assigned = 0;
         }
     }
     return table;
 }
-
 
 void free_table(HASHTABLE *table) {
     //musíme dealokovať childov, aby sme mohli priradiť nových, môžme to spraviť cez to extracted, aby sme sa vyhli dealokácii LL
@@ -130,19 +128,16 @@ void free_table(HASHTABLE *table) {
         BOD *current = table->children[i]; //začneme od druhého prvku
         BOD *next_node;
 
-        if (current->next != NULL) {
-            BOD *act = current;
-            //while (act->next != NULL) {
-                next_node = act->next;
-                free(act);
-                act = next_node;
-            //}
+        while (current != NULL) {
+            next_node = current->next;
+            free(current);
+            current = next_node;
         }
-        else {
-            free(table->children[i]);
-        }
+        table->children[i] = NULL;
+
     }
     free(table->children);
+    table->children = NULL;
     free(table);
 }
 
@@ -179,12 +174,12 @@ HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res, BOD *extracte
     }
 
     if (success && extracted != NULL) {
-        extracted[table->n_of_children] = *new_b;
+        //printf("added new element at %d with values %d,%d\n",table->n_of_children);
+        extracted[table->n_of_children-1] = *new_b;
     }
 
     return table;
 }
-
 
 BOD *extract_items_from_hs(HASHTABLE *table, BOD *extracted, int last_n) {
     int index = 0;
@@ -202,7 +197,6 @@ BOD *extract_items_from_hs(HASHTABLE *table, BOD *extracted, int last_n) {
     return extracted;
 }
 
-
 //HEAP operácie
 HEAP *create_heap(int n) {
     HEAP *heap = malloc(sizeof(HEAP));
@@ -212,16 +206,14 @@ HEAP *create_heap(int n) {
     return heap;
 }
 
-
-
-
-
 HEAP *heapify_up(HEAP *heap, int idx) {
     //pri add sa to dá na najbližšie prázdne miesto a potom sa posúva hore kým nie je správne
+    if (idx == 0) return heap;
 
-    int p_idx = floor(idx/2);
+
+    int p_idx = (idx-1)/2;
     //printf("p %d",p_idx);
-    if (p_idx < heap->heapsize && heap->children[p_idx].dist > heap->children[idx].dist) { //ak je platný a
+    if (heap->children[p_idx].dist > heap->children[idx].dist) { //ak je platný a
         //swap mna a parenta, swap ala C
 
         HEAP_CHILD tmp = heap->children[p_idx];
@@ -234,7 +226,6 @@ HEAP *heapify_up(HEAP *heap, int idx) {
     return heap;
 }
 
-
 HEAP *heapify_down(HEAP *heap, int idx) {
     //pri add sa to dá na najbližšie prázdne miesto a potom sa posúva hore kým nie je správne
 
@@ -244,11 +235,11 @@ HEAP *heapify_down(HEAP *heap, int idx) {
     //hladame smallest idx
     int smallest = idx;
 
-    if (left < heap->heapsize && heap->children[left].dist < heap->children[idx].dist) {
+    if (left < heap->heapsize && heap->children[left].dist < heap->children[smallest].dist) {
         smallest = left;
     }
 
-    if (right < heap->heapsize && heap->children[right].dist < heap->children[idx].dist) {
+    if (right < heap->heapsize && heap->children[right].dist < heap->children[smallest].dist) {
         smallest = right;
     }
 
@@ -265,47 +256,61 @@ HEAP *heapify_down(HEAP *heap, int idx) {
     return heap;
 }
 
-HEAP *add_child(HEAP *heap, short i, short j, uint16_t dist) {
+HEAP *add_child(HEAP *heap, int i, int j, int dist) {
     heap->children[heap->heapsize].i = i;
     heap->children[heap->heapsize].j = j;
     heap->children[heap->heapsize].dist = dist;
 
-    heapify_up(heap,heap->heapsize);
     heap->heapsize += 1;
+
+    if (heap->heapsize == heap->capacity) {
+        heap->capacity = heap->capacity << 1;
+        printf("resized to: %d\n",heap->capacity);
+        heap->children = realloc(heap->children, heap->capacity*sizeof(HEAP_CHILD));
+    }
+
+    heapify_up(heap,heap->heapsize - 1);
     return heap;
 }
 
-
 HEAP_CHILD remove_min(HEAP *heap) {
+    if (heap->heapsize == 0) {
+        printf("prázdny heap\n");
+        HEAP_CHILD dummy = {0,0,-1}; //-1 je neplatné dist
+        return dummy;
+    }
+
+
     HEAP_CHILD min = heap->children[0];
-    heap->children[0] = heap->children[heap->heapsize];
     heap->heapsize -= 1;
+    heap->children[0] = heap->children[heap->heapsize];
+
     heapify_down(heap,0);
 
     return min;
 }
-
-
-
-
 
 short int generate_range(int upper, int lower) {
     short int x = rand() % (upper-lower+1) + lower; //0 až upper
     return x;
 }
 
-static inline uint16_t calculate_distance(BOD *bod1, BOD *bod2) {
+int calculate_distance(BOD *bod1, BOD *bod2) {
     //dáme rovno štvorcovú vzdialenosť
     const int diff1 = bod2->x-bod1->x;
     const int diff2 = bod2->y-bod1->y;
 
 
     const int distance = diff1*diff1 + diff2*diff2;
-    return (distance > 2500) ? 0 : distance;
+    return (distance > 250000) ? 0 : distance;
 }
 
-float calculate_distance_simple(BOD_SIMPLE bod1, BOD_SIMPLE bod2) {
-    float distance = pow(bod2.x-bod1.x,2) + pow(bod2.y-bod1.y,2);
+int calculate_distance_simple(BOD_SIMPLE *bod1, BOD_SIMPLE *bod2) {
+    const int diff1 = bod2->x-bod1->x;
+    const int diff2 = bod2->y-bod1->y;
+
+
+    const int distance = diff1*diff1 + diff2*diff2;
     return distance;
 }
 
@@ -325,23 +330,27 @@ HEAP *create_matica_vzd(int capacity, BOD *extracted) {
     for (int i=0;i<n;i++) {
         BOD *i1 = &extracted[i];
         for (int j=0;j<i;j++) {
-            uint16_t distance = calculate_distance(i1,&extracted[j]);
+            int distance = calculate_distance(i1,&extracted[j]);
 
             if (distance != 0) {
                 if (heap->heapsize == initial_size) {
                     initial_size = initial_size << 1;
+                    heap->capacity = initial_size;
 
-                    heap->children = realloc(heap->children, initial_size*sizeof(HEAP_CHILD));
-                    if (!heap->children) {
-                        printf("rwalocacia zlyhala");
+                    HEAP_CHILD *temp = realloc(heap->children, initial_size * sizeof(HEAP_CHILD));
+                    if (!temp) {
+                        printf("Realloc failed!\n");
+                        free(heap->children);  // Uvoľníme starú pamäť
+                        exit(1);
                     }
+                    heap->children = temp;
                 }
                 add_child(heap,i,j,distance);
             }
         }
     }
 
-
+    printf("je: %d/%d\n",heap->heapsize,heap->capacity);
     return heap;
 }
 
@@ -355,6 +364,7 @@ CLUSTER create_cluster(BOD *bod) {
 
     new.children[0] = new_b;
     new.n_of_children = 1;
+    new.capacity = 10;
     return new;
 }
 
@@ -371,11 +381,6 @@ CLUSTER_LIST* init_cluster_list(BOD *extracted, int capacity) {
 
     return c_list;
 }
-
-
-
-
-
 
 HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
     //nesmu byť rovnaké tie body
@@ -409,6 +414,8 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table, BOD *extracted) {
         short int x = generate_range(table->n_of_children-1,0);
         BOD selected = extracted[x]; //ušetrené 0.007s? 0.018s->0.011s bez alokácie
 
+        //printf("selected: %d,%d na x: %d\n",selected.x,selected.y,x);
+
         register int bod_x = selected.x;
         register int bod_y = selected.y;
 
@@ -428,33 +435,195 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table, BOD *extracted) {
 
 
         table = add_hash(table, dummy,res,extracted); //toto zase pridá veľa sekúnd a preváži zisk vyššie
-
     }
     return table;
 }
 
-CLUSTER *aglomeratne_clusterovanie(CLUSTER *clusters, HEAP *heap) {
+CLUSTER* merge_clusters(CLUSTER *c1, CLUSTER *c2) { //predpokladá sa, že chceme spojiť c2 do c1 a vrátiť c1
+    //cek ci sa zmestí
+    if (c1->n_of_children + c2->n_of_children > c1->capacity) {
+        //zvačši c1 buffer
+        c1->capacity *= 10;
+        //printf("zvyšujem na %d\n",c1->capacity);
+        BOD_SIMPLE *temp = realloc(c1->children, c1->capacity * sizeof(BOD_SIMPLE));
+        if (!temp) {
+            perror("Not enough memory\n");
+            return NULL;  // Alebo spraviť chybu inak
+        }
+        c1->children = temp;
+    }
 
+    //prekopírovanie
+    int c1_n = c1->n_of_children;
+    for (int i=0;i<c2->n_of_children;i++) {
+        c1->children[c1_n+i] = c2->children[i];
+    }
+
+    c1->n_of_children += c2->n_of_children;
+    return c1;
+}
+
+BOD_SIMPLE calculate_centroid(CLUSTER *cluster) {
+    if (cluster->n_of_children == 1) { //sám sebe centroidom
+        return cluster->children[0];
+    }
+
+    //výpočet centroidu
+    //1. spočítať x a y
+    //2. centroid = [priem. x, priem.y]
+
+    //treba sum_x, sum_y, n_of_children
+    int sum_x = 0, sum_y = 0;
+    for (int i=0;i<cluster->n_of_children;i++) {
+        sum_x += cluster->children[i].x;
+        sum_y += cluster->children[i].y;
+    }
+
+    BOD_SIMPLE res;
+    res.x = (short)(sum_x/cluster->n_of_children);
+    res.y = (short)(sum_y/cluster->n_of_children);
+
+    return res;
+}
+
+BOD_SIMPLE calculate_medoid(CLUSTER *cluster) {
+    if (cluster->n_of_children == 1) { //sám sebe centroidom
+        return cluster->children[0];
+    }
+
+
+    //každý bod s každým
+    int smallest_idx = 0, smallest_sum = 200000; //max možná vzdialenosť skoro
+    int sum_col;
+    for (int i=0;i<cluster->n_of_children;i++) {
+        sum_col = 0;
+        for (int j=0;j<cluster->n_of_children;j++) {
+            if (i == j) { //keď tak odstran ak prevýši zisk
+                continue;
+            }
+            int dist = calculate_distance_simple(&cluster->children[i],&cluster->children[j]);
+            sum_col += dist;
+        }
+        if (sum_col < smallest_sum) {
+            smallest_sum = sum_col;
+            smallest_idx = i;
+        }
+    }
+
+    BOD_SIMPLE res = cluster->children[smallest_idx];
+    return res;
+
+}
+
+int find_avg_dist(CLUSTER *cluster, int mode) {
+    BOD_SIMPLE bod;
+    if (mode == 0) {
+        bod = calculate_centroid(cluster);
+    }
+    else {
+        bod = calculate_medoid(cluster);
+    }
+
+    //vzdialenost všetkých bodov clustera od centroidu/medoidu
+    int sum_avg = 0;
+    for (int i=0;i<cluster->n_of_children;i++) {
+
+        int dist = calculate_distance_simple(&cluster->children[i],&bod);
+        sum_avg += dist;
+    }
+
+    int avg_dist = sum_avg/cluster->n_of_children;
+    //printf("avg dist: %d\n",avg_dist);
+    return (avg_dist <= 250000) ? 0 : 1; //500**2
+}
+
+
+
+
+CLUSTER_LIST *aglomeratne_clusterovanie(CLUSTER_LIST *clusters, HEAP *heap, int mode) { //mode 0 - centroid, 1 - medoid
     while (1) {
         HEAP_CHILD min = remove_min(heap);
-        while (clusters[min.i].n_of_children == 0 || clusters->n_of_children) {
+        if (min.dist == -1) {
+            break; //prázdna halda
+        }
+
+        while (clusters->clusters[min.i].n_of_children == 0 || clusters->clusters[min.j].n_of_children == 0) { //ak je jeden z nich "odstránený"
             min = remove_min(heap);
         }
 
-        //merge clusters
-        if (clusters[min.j].n_of_children == 0) { //nemám čo spájať
+        //printf("som tu i:%d, j:%d, dist:%d\n",min.i,min.j,min.dist);
+
+        if (clusters->n_clusters == 0 || min.dist == -1) { //nemám čo spájať
+            break;
+        }
+
+        //merge clusters, aby sa to nekopírovalo zbytočne
+        clusters->clusters[min.i] = *merge_clusters(&clusters->clusters[min.i],&clusters->clusters[min.j]);
+
+
+        //priemerná vzdialenosť
+        int podmienka = find_avg_dist(&clusters->clusters[min.i],mode);
+
+        //ci presiahol priem vzdialenost 500 alebo nie
+        if (podmienka == 1) {
+            printf("Bola prekročená maximálna priemerná vzdialenosť clustera.");
             break;
         }
 
 
+        //vymazanie zhlukov
+        free(clusters->clusters[min.j].children); //ak to nepojde, tak sa dá free len na childov to pojde určite
+        clusters->clusters[min.j].children = NULL;
+        clusters->clusters[min.j].n_of_children = 0;
+
+
+        //for (int i=0;i<clusters->clusters[min.i].n_of_children;i++) {
+        //    printf("BOD %d: %d,%d\n",i,clusters->clusters[min.i].children[i].x,clusters->clusters[min.i].children[i].y);
+        //}
+
+        //pocitanie centroidu/medoidu nového clustera
+        BOD_SIMPLE centroid_medoid;
+        if (mode == 0) {
+            centroid_medoid = calculate_centroid(&clusters->clusters[min.i]);
+            //printf("Centroid: %d,%d\n",centroid_medoid.x,centroid_medoid.y);
+        }
+        else {
+            centroid_medoid = calculate_medoid(&clusters->clusters[min.i]);
+            //printf("Medoid: %d,%d\n",centroid_medoid.x,centroid_medoid.y);
+        }
+
+
+        //vypocet noveho riadka - potrebujem funkciu na centroid/medoid
+        BOD_SIMPLE bod; //možno dynamicky alokovať? todo
+        if (mode == 0) { //centroid
+            for (int i=0;i<clusters->n_clusters;i++) { //vzdialenost všetkých clusterov a nás
+                if (clusters->clusters[i].n_of_children != 0) {
+                    bod = calculate_centroid(&clusters->clusters[i]);
+                    int dist = calculate_distance_simple(&centroid_medoid,&bod);
+
+                    if (dist != 0 && dist <= 250000) { //vlozenie do heapu nového riadka
+                        heap = add_child(heap,min.i,i,dist);
+                        //printf("added %d,%d a %d\n",min.i,i, dist);
+                    }
+                }
+            }
+        }
+        else {
+            for (int i=0;i<clusters->n_clusters;i++) { //vzdialenost všetkých clusterov a nás
+                if (clusters->clusters[i].n_of_children != 0) {
+                    bod = calculate_medoid(&clusters->clusters[i]);
+                    int dist = calculate_distance_simple(&centroid_medoid,&bod);
+
+                    if (dist != 0 && dist <= 250000) { //vlozenie do heapu nového riadka
+                        heap = add_child(heap,min.i,i,dist);
+                        //printf("added %d,%d a %d\n",min.i,i, dist);
+                    }
+                }
+            }
+        }
 
 
     }
-
-
-
-
-
 
     return clusters;
 }
@@ -470,6 +639,7 @@ CLUSTER *aglomeratne_clusterovanie(CLUSTER *clusters, HEAP *heap) {
 
 
 void print_arr(HASHTABLE *table) {
+    printf("printing table:\n");
     for (int i=0;i<table->n_of_children;i++) {
         if (table->children[i]->assigned == 1) {
 
@@ -492,6 +662,7 @@ void print_arr(HASHTABLE *table) {
         }
 
     }
+    printf("end of the table\n");
 }
 
 
@@ -517,20 +688,24 @@ int main() {
     extracted = extract_items_from_hs(table,extracted,0); //extrakcia po prvom generovaní
     table = clear_table(table); //recyklácia tabuľky
 
+
     table = druhotne_body(druhotne,table, extracted); //druhotne generovanie
     extracted = extract_items_from_hs(table,extracted,prvotne); //extrakcia, finalne body
 
+
     free_table(table); //dealokuj tabuľku
 
+
     HEAP *heap = create_matica_vzd(capacity,extracted); //vytvor maticu vzdialeností
-
-
 
 
     CLUSTER_LIST *clusters = init_cluster_list(extracted,capacity);
 
 
     gettimeofday(&start, NULL); // Začiatok merania
+
+    clusters = aglomeratne_clusterovanie(clusters,heap,0);
+
 
 
 
@@ -691,7 +866,6 @@ int main() {
  * zložitosť: O(log n) čo je celkom dobre oproti O(n) čo je teraz viac menej
  *
  *
- * TODO - sprav heap vektorový a nejak vymysli vymazávanie pre určité klustery
  * teraz ma napadlo short pre index že ku ktorému clusteru patrí a potom by sa len podľa neho mazalo z heapu, akože aj tak cyklenie, ale it is wat it is
  * tam sa zmestí 65535 indexov pre clustery, hlavný problém tam je mazanie, to už rovno môžem skipnút maticu vzd a rovno to šupnúť do heap, to by bolo svižnejšie?
  */
@@ -731,8 +905,27 @@ int main() {
  * 20+50000: 4 116 987
  * 20+100000: 16 741 000 prvkov
  * tip: x40? to máš na pár hopov do limitu, časté realokácie mi dávajú error a zas nechcem všetko prerátavať znova a znova
+ *
+ *
+ * PROBLEM: tým, že neodstranujem ale len pridávam, tak sa mi strašne rýchlo zväčšuje pole a je to hodne pamäte a to je špatne
+ *
  */
 
+//MEDOID
+/*
+ * 1. buď vypočítaš všetko 2 krát ale nemusíš ukladať do matice, čiže nulové pamäťové nároky alebo
+ * 2. budeš ukladať do matice, čiže pamäť, ale budeš robiť len prístupy do vedlajších polí a brať zvyšok čo potrebuješ
+ * tá 2jka je interesantná, ale problematickejšia a zase pamäť nechcem, uvidím ako pôjde pre veľa bodov ten 1. prístup a keď tak to zmeníme
+ */
 
-
+//AGLOMERATNE CLUSTEROVANIE:
+/*
+ * stats:
+ * 20+20000: 5.5s cca len clusterovanie čo je crazy, s výpismi, 4.4s-5s bez veľkých výpisov len resizy
+ * 20000+20000: 18.75s s výpismi, je to menší heap lebo je to rozhodené po mape, ale zase viac resizov clusterov, 15.4s bez výpisu
+ *
+ * PROBLEM: pamäť dochádza lebo nemám efektívne čistenie heapu, proste sa spolieham na to, že sa to samé vymaže, ale to nie je dobre, moc veľký heap
+ *
+ * TODO: keď toto fixnem, tak dealokovať
+ */
 
