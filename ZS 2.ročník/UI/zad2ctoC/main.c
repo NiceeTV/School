@@ -3,7 +3,7 @@
 #include <time.h>
 #include <stdint.h>
 #include <sys/time.h>
-#include <math.h>
+#include <immintrin.h>
 
 
 typedef struct bod  {
@@ -12,8 +12,6 @@ typedef struct bod  {
     unsigned char assigned;
     struct bod *next;
 } BOD;
-
-
 
 typedef struct hashtable {
     int capacity;
@@ -31,29 +29,16 @@ typedef struct bod_simple {
     short y;
 } BOD_SIMPLE;
 
-typedef struct cluster {
-    BOD_SIMPLE *children;
-    int n_of_children; //to ma ani tak nezaujíma koľko ich je
-    int capacity; //tiež asi nie
-} CLUSTER;
-
-typedef struct cluster_list {
-    int active_clusters;
-    int capacity;
-    CLUSTER *clusters; //8+4*n_children to do zmeniť na predalokovanú tabuľku potom ale, zatiaľ to je 48B na cluster
-} CLUSTER_LIST;
-
-
 typedef struct heap_child {
     int i;
     int j;
     int dist;
 } HEAP_CHILD;
 
-
 typedef struct heap {
     int heapsize;
     int capacity;
+    int reserve;
     HEAP_CHILD *children;
 } HEAP;
 
@@ -64,20 +49,6 @@ typedef struct chunk_buffer {
     struct chunk_buffer *next;
 } CHUNKBUFFER;
 
-
-typedef struct cluster_buffer { //20B na buffer pre 1000 bufferov -> 98kB to by sa dalo dať do stacku rýchlo
-    int n_of_children;
-    BOD_SIMPLE *children;
-    struct cluster_buffer *next;
-}CLUSTER_BUFFER;
-
-
-
-
-
-
-
-//TEST KOD
 
 typedef struct proto_cluster { //16B na cluster * 20000 = 312kB treba to asi alokovat dynamicky, ale to je jedno
     //využijem čo som použil vyššie štruktúru BOD, ktorá má next pointer, ktorý slúžil na tvorbu LL v HASHTABLE
@@ -91,28 +62,28 @@ typedef struct proto_cluster_list {
     PROTO_CLUSTER *clusters; //8+4*n_children to do zmeniť na predalokovanú tabuľku potom ale, zatiaľ to je 48B na cluster
 } PROTO_CLUSTER_LIST;
 
-void heapify_down(HEAP *heap, int idx, PROTO_CLUSTER_LIST *clist);
 
 
-void merge_proto_clusters(PROTO_CLUSTER *c1, PROTO_CLUSTER *c2) {
+
+//TEST KOD
+
+
+
+void heapify_down(HEAP *heap, int idx);
+HEAP *clean_heap(HEAP *heap, PROTO_CLUSTER_LIST *clist);
+
+PROTO_CLUSTER *merge_proto_clusters(PROTO_CLUSTER *c1, PROTO_CLUSTER *c2) {
     //precykli c2 a prekopíruj na tail c1
     BOD *current = c2->head;
     BOD *c1_tail = c1->tail;
-    while (current != NULL) {
-        c1_tail->next = current;
-        c1_tail = current;
 
-        current = current->next;
-    }
-    c1->tail = c1_tail;
+    c1_tail->next = current;
+    c1->tail = c2->tail;
+
 
     //treba dealokovať LEN proto cluster, nie jeho prvky, lebo tie sa len presuvaju
+    return c1;
 }
-
-
-
-
-
 
 CHUNKBUFFER *create_buffer(int size) {
     CHUNKBUFFER *buffer = malloc(sizeof(CHUNKBUFFER));
@@ -123,8 +94,6 @@ CHUNKBUFFER *create_buffer(int size) {
     buffer->next = NULL;
     return buffer;
 }
-
-
 
 //operácie LL
 SEARCH_RES *ll_search(BOD* head, BOD *searched, SEARCH_RES *res) {
@@ -152,14 +121,6 @@ BOD* create_bod(short x, short y) {
     new_b->next = NULL;
     return new_b;
 }
-
-//HASHTABLE *create_table(int n) {
-//    HASHTABLE* new_table = malloc(sizeof(HASHTABLE));
-//    new_table->capacity = n;
- //   new_table->n_of_children = 0;
-    //new_table->children;
- //   return new_table;
-//}
 
 void init_table(HASHTABLE *table) {
     for (int i = 0; i < table->capacity; i++) {
@@ -269,20 +230,17 @@ BOD *extract_items_from_hs(HASHTABLE *table, BOD *extracted, int last_n) {
 }
 
 //HEAP operácie
-HEAP *create_heap(int n) {
+HEAP *create_heap(int n,int reserve) {
     HEAP *heap = malloc(sizeof(HEAP));
     heap->children = malloc(sizeof(HEAP_CHILD)*n);
     heap->heapsize = 0;
     heap->capacity = n;
+    heap->reserve = reserve;
     return heap;
 }
 
-
-
-void heapify_up(HEAP *heap, int idx, PROTO_CLUSTER_LIST *clist) {
+void heapify_up(HEAP *heap, int idx) {
     //pri add sa to dá na najbližšie prázdne miesto a potom sa posúva hore kým nie je správne
-
-
     while (idx > 0) {
         int p_idx = (idx-1)/2;
 
@@ -293,21 +251,13 @@ void heapify_up(HEAP *heap, int idx, PROTO_CLUSTER_LIST *clist) {
             heap->children[p_idx] = heap->children[idx];
             heap->children[idx] = tmp;
 
-
-
-            /*if (clist != NULL && clist->clusters[heap->children[idx].i].head == NULL) { //našli sme neplatny prvok
-                heap->children[idx].dist = 0; //rezervované pre neplatne prvky
-                heapify_down(heap,idx,clist);
-                //printf("sending %d,%d to top\n",heap->children[idx].i,heap->children[idx].j);
-            }*/
-
         }
         idx = p_idx;
 
     }
 }
 
-void heapify_down(HEAP *heap, int idx, PROTO_CLUSTER_LIST *clist) {
+void heapify_down(HEAP *heap, int idx) {
     //pri add sa to dá na najbližšie prázdne miesto a potom sa posúva hore kým nie je správne
 
     while (1) {
@@ -333,12 +283,6 @@ void heapify_down(HEAP *heap, int idx, PROTO_CLUSTER_LIST *clist) {
             heap->children[idx] = tmp;
             idx = smallest;
 
-            //ak by delete neplatneho prvku znamenal: set dist na 0, heapify up a remove_min
-            /*if (clist != NULL && clist->clusters[heap->children[idx].i].head == NULL) { //našli sme neplatny prvok
-                heap->children[idx].dist = 0; //rezervované pre neplatne prvky
-                heapify_up(heap,idx,clist);
-                //printf("sending %d,%d to top\n",heap->children[idx].i,heap->children[idx].j);
-            }*/
         }
         else {
             break; //koniec heapify-down
@@ -346,31 +290,83 @@ void heapify_down(HEAP *heap, int idx, PROTO_CLUSTER_LIST *clist) {
     }
 }
 
+
+
+
 void add_child(HEAP *heap, const int i, const int j, const int dist,PROTO_CLUSTER_LIST *clist) {
-    if (heap->heapsize >= heap->capacity) {
-        heap->capacity *= 2; // *2
-        printf("resized to: %d\n",heap->capacity);
-        heap->children = realloc(heap->children, heap->capacity*sizeof(HEAP_CHILD));
+    //temporary uloženie c1 head, aby som mohol vymazať aj jeho prvky z heapu
+    if (heap->heapsize == heap->capacity) { //REBUILD HEAP - bez alokácií
+        BOD *tmp = clist->clusters[i].head;
+        clist->clusters[i].head = NULL; //aby clean_heap vymazal aj tieto prvky
+
+        heap = clean_heap(heap, clist);
+        clist->clusters[i].head = tmp;
     }
+
 
 
     heap->children[heap->heapsize].i = i;
     heap->children[heap->heapsize].j = j;
     heap->children[heap->heapsize].dist = dist;
-
     heap->heapsize += 1;
 
 
-
-    heapify_up(heap,heap->heapsize - 1,clist);
+    heapify_up(heap,heap->heapsize - 1);
 }
 
 void add_child_buffer(HEAP *heap, HEAP_CHILD *to_add) {
     heap->children[heap->heapsize++] = *to_add; //prekopíruje obsah pointera
-
+    heapify_up(heap,heap->heapsize - 1);
 }
 
-HEAP_CHILD remove_min(HEAP *heap, PROTO_CLUSTER_LIST *clist) {
+
+HEAP *clean_heap(HEAP *heap, PROTO_CLUSTER_LIST *clist) {
+
+    printf("REBUILDING HEAP, OLD SIZE: %d\n",heap->heapsize); //hybridný prístup, ak sa nepodarí mallocnut nový heap, tak sa bude pokračovať dalej kym nebude miesto na to
+
+    int n = heap->heapsize;
+    heap->heapsize = 0;
+    int k = 0;
+
+    while (k < n) {
+        if (clist->clusters[heap->children[k].i].head == NULL || clist->clusters[heap->children[k].j].head == NULL) {
+            heap->children[k] = heap->children[n-1]; //n sa správa ako heapsize
+            n--;
+            continue;
+        }
+
+
+        //pošle sa do heapu
+        add_child_buffer(heap,&heap->children[k]);
+        k++;
+    }
+
+
+    if (heap->heapsize < heap->capacity - heap->reserve) {
+        heap->reserve = (int)(heap->heapsize*0.2);
+        heap->capacity = heap->heapsize + heap->reserve;
+
+        //ATTEMPTING TO REALOC
+        /*HEAP_CHILD *new_heap_children = realloc(heap->children,heap->capacity * sizeof(HEAP_CHILD));
+        if (new_heap_children) {
+            heap->children = new_heap_children;
+        }
+        printf("realloced to %d\n",heap->capacity);*/
+    }
+
+
+
+    printf("DONE, new size: %d/%d\n",heap->heapsize, heap->capacity);
+    return heap;
+}
+
+
+
+
+
+
+
+HEAP_CHILD remove_min(HEAP *heap) {
     if (heap->heapsize == 0) {
         printf("prázdny heap\n");
         HEAP_CHILD dummy = {0,0,-1}; //-1 je neplatné dist
@@ -382,7 +378,7 @@ HEAP_CHILD remove_min(HEAP *heap, PROTO_CLUSTER_LIST *clist) {
     heap->heapsize -= 1;
     heap->children[0] = heap->children[heap->heapsize];
 
-    heapify_down(heap,0,clist);
+    heapify_down(heap,0);
 
     return min;
 }
@@ -402,25 +398,8 @@ int calculate_distance(BOD *bod1, BOD *bod2) {
     return (distance > 250000) ? 0 : distance;
 }
 
-int calculate_distance_simple(BOD_SIMPLE *bod1, BOD_SIMPLE *bod2) {
-    const int diff1 = bod2->x-bod1->x;
-    const int diff2 = bod2->y-bod1->y;
-
-    const int distance = diff1*diff1 + diff2*diff2;
-    return distance;
-}
-
-
-
-//CHUNKBUFFER
-
-
-
-
-
-
+//CHUNKBUFFER - HEAP ALLOCATION
 HEAP *create_matica_vzd2(int capacity, BOD *extracted) {
-    //napadla ma optimalizácia: ak vypočítam, že vzdialenosť je viac ako 500, tak to ani nedám do matice, ďalšie ušetrené miesto
     struct timeval start, end;
     gettimeofday(&start, NULL);
 
@@ -443,7 +422,7 @@ HEAP *create_matica_vzd2(int capacity, BOD *extracted) {
                     buffer_idx = 0;
 
                     CHUNKBUFFER *new = create_buffer(initial_size);
-                    printf("new chunk of size: %d\n",initial_size);
+                    //printf("new chunk of size: %d\n",initial_size);
 
                     current_buffer->next = new; //začne sa plniť nový buffer
                     current_buffer = new;
@@ -460,9 +439,10 @@ HEAP *create_matica_vzd2(int capacity, BOD *extracted) {
         }
     }
 
-    printf("count %d\n",count);
+    //printf("count %d\n",count);
     //vložíme to do jedného heapu
-    HEAP *heap = create_heap((int)(1.2*count)); //20% rezerva
+    int reserve = count*0.2; //20% rezerva
+    HEAP *heap = create_heap(count+reserve,reserve); //20% rezerva
     int i=0;
     while (buffer != NULL) {
         for (int j = 0; j < buffer->n_of_children; j++) {
@@ -474,7 +454,7 @@ HEAP *create_matica_vzd2(int capacity, BOD *extracted) {
         free(tmp);
     }
 
-    printf("heapsize voci rezerva %d/%d\n",count,heap->capacity);
+    //printf("heapsize voci rezerva %d/%d\n",count,heap->capacity);
     gettimeofday(&end, NULL);
     double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
     printf("Heap allocated: %fs\n",elapsed);
@@ -482,27 +462,10 @@ HEAP *create_matica_vzd2(int capacity, BOD *extracted) {
 }
 
 
-
-CLUSTER create_cluster(BOD *bod) {
-    CLUSTER new;
-    new.children = malloc(sizeof(BOD_SIMPLE)*10);
-
-    BOD_SIMPLE new_b;
-    new_b.x = (short)bod->x;
-    new_b.y = (short)bod->y;
-
-    new.children[0] = new_b;
-    new.n_of_children = 1;
-    new.capacity = 10;
-    return new;
-}
-
 PROTO_CLUSTER_LIST* init_cluster_list(BOD *extracted, int capacity) {
-
     PROTO_CLUSTER_LIST *c_list = malloc(sizeof(PROTO_CLUSTER_LIST));
     c_list->active_clusters = capacity;
     c_list->capacity = capacity;
-
     c_list->clusters = malloc(sizeof(PROTO_CLUSTER)*capacity);
 
     //init clusterov
@@ -513,7 +476,6 @@ PROTO_CLUSTER_LIST* init_cluster_list(BOD *extracted, int capacity) {
         c_list->clusters[i].head = to_add;
         c_list->clusters[i].tail = to_add;
     }
-
     return c_list;
 }
 
@@ -576,35 +538,12 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table, BOD *extracted) {
     return table;
 }
 
-CLUSTER* merge_clusters(CLUSTER *c1, CLUSTER *c2) { //predpokladá sa, že chceme spojiť c2 do c1 a vrátiť c1
-    //cek ci sa zmestí
-    if (c1->n_of_children + c2->n_of_children > c1->capacity) {
-        //zvačši c1 buffer
-        c1->capacity *= 20;
-        //printf("zvyšujem na %d\n",c1->capacity);
-        BOD_SIMPLE *temp = realloc(c1->children, c1->capacity * sizeof(BOD_SIMPLE));
-        if (!temp) {
-            perror("Not enough memory\n");
-            return NULL;  // Alebo spraviť chybu inak
-        }
-        c1->children = temp;
-    }
 
-    //prekopírovanie
-    int c1_n = c1->n_of_children;
-    for (int i=0;i<c2->n_of_children;i++) {
-        c1->children[c1_n+i] = c2->children[i];
-    }
-
-    c1->n_of_children += c2->n_of_children;
-    return c1;
-}
-
-BOD* calculate_centroid(PROTO_CLUSTER *cluster, BOD *centroid) {
+BOD calculate_centroid(PROTO_CLUSTER *cluster) {
     if (cluster->head == cluster->tail) { //sám sebe centroidom
-        centroid = cluster->head;
+        return *cluster->head;
     }
-
+    BOD centroid;
     //výpočet centroidu
     //1. spočítať x a y
     //2. centroid = [priem. x, priem.y]
@@ -620,14 +559,14 @@ BOD* calculate_centroid(PROTO_CLUSTER *cluster, BOD *centroid) {
         count++;
     }
 
-    centroid->x = (short)(sum_x/count);
-    centroid->y = (short)(sum_y/count);
+    centroid.x = (short)(sum_x/count);
+    centroid.y = (short)(sum_y/count);
     return centroid;
 }
 
-BOD* calculate_medoid(PROTO_CLUSTER *cluster) {
+BOD calculate_medoid(PROTO_CLUSTER *cluster) {
     if (cluster->head == cluster->tail) { //sám sebe centroidom
-        return cluster->head;
+        return *cluster->head;
     }
 
 
@@ -658,13 +597,14 @@ BOD* calculate_medoid(PROTO_CLUSTER *cluster) {
     }
 
 
-    return smallest;
+    return *smallest;
 
 }
 
-int find_avg_dist(PROTO_CLUSTER *cluster, BOD *bod, int mode) {
+int find_avg_dist(PROTO_CLUSTER *cluster, int mode) {
+    BOD bod;
     if (mode == 0) {
-        bod = calculate_centroid(cluster,bod);
+        bod = calculate_centroid(cluster);
     }
     else {
         bod = calculate_medoid(cluster); //lebo je to existujúci bod, tak mi ho proste vráti
@@ -675,7 +615,7 @@ int find_avg_dist(PROTO_CLUSTER *cluster, BOD *bod, int mode) {
     int count = 0;
     BOD *act = cluster->head;
     while (act != NULL) {
-        int dist = calculate_distance(act,bod);
+        int dist = calculate_distance(act,&bod);
         sum_avg += dist;
         act = act->next;
         count++;
@@ -693,13 +633,13 @@ int find_avg_dist(PROTO_CLUSTER *cluster, BOD *bod, int mode) {
 PROTO_CLUSTER_LIST *aglomeratne_clusterovanie(PROTO_CLUSTER_LIST *clusters, HEAP *heap, int mode) { //mode 0 - centroid, 1 - medoid
     struct timeval start, end;
 
-    BOD* centroid_medoid = malloc(sizeof(BOD));
-    BOD* bod = malloc(sizeof(BOD));
+
+
 
 
     while (1) {
         gettimeofday(&start, NULL);
-        HEAP_CHILD min = remove_min(heap,clusters);
+        HEAP_CHILD min = remove_min(heap);
 
         if (min.dist == -1) {
             break; //prázdna halda
@@ -707,7 +647,7 @@ PROTO_CLUSTER_LIST *aglomeratne_clusterovanie(PROTO_CLUSTER_LIST *clusters, HEAP
 
         while (clusters->clusters[min.i].head == NULL || clusters->clusters[min.j].head == NULL) { //ak je jeden z nich "odstránený"
             //printf("ešte znova, removed %d,%d\n",min.i,min.j);
-            min = remove_min(heap,clusters);
+            min = remove_min(heap);
             if (min.dist == -1) {
                 break; //prázdna halda
             }
@@ -715,6 +655,7 @@ PROTO_CLUSTER_LIST *aglomeratne_clusterovanie(PROTO_CLUSTER_LIST *clusters, HEAP
         }
 
 
+        //printf("heap: %d\n",heap->heapsize);
         //printf("som tu i:%d, j:%d, dist:%d\n",min.i,min.j,min.dist);
         if (clusters->active_clusters == 1 || min.dist == -1) { //nemám čo spájať
             break;
@@ -722,25 +663,25 @@ PROTO_CLUSTER_LIST *aglomeratne_clusterovanie(PROTO_CLUSTER_LIST *clusters, HEAP
 
         gettimeofday(&end, NULL);
         double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
-        printf("\n#################\n");
-        printf("Search: %fs\n",elapsed);
+        //printf("\n#################\n");
+        //printf("Search: %fs\n",elapsed);
 
 
 
         gettimeofday(&start, NULL);
         //merge clusters, aby sa to nekopírovalo zbytočne
-        merge_proto_clusters(&clusters->clusters[min.i],&clusters->clusters[min.j]);
+        clusters->clusters[min.i] = *merge_proto_clusters(&clusters->clusters[min.i],&clusters->clusters[min.j]);
 
         gettimeofday(&end, NULL);
         elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
-        printf("Merge: %fs\n",elapsed);
+        //printf("Merge: %fs\n",elapsed);
 
 
 
 
         gettimeofday(&start, NULL);
         //priemerná vzdialenosť
-        int podmienka = find_avg_dist(&clusters->clusters[min.i],bod,mode);
+        int podmienka = find_avg_dist(&clusters->clusters[min.i],mode);
 
         //ci presiahol priem vzdialenost 500 alebo nie
         if (podmienka == 1) {
@@ -749,49 +690,9 @@ PROTO_CLUSTER_LIST *aglomeratne_clusterovanie(PROTO_CLUSTER_LIST *clusters, HEAP
         }
         gettimeofday(&end, NULL);
         elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
-        printf("Avg dist: %fs\n",elapsed);
+        //printf("Avg dist: %fs\n",elapsed);
 
 
-        //vymazať z heapu, je celkom rozumné uvažovať, že treba vymazať okolo n_clusters + 1 prvkov, možno tam bude aj trochu takých čo netreba, ale nie veľa
-        //tiež môžeme dať trochu lepšiu optimalizáciu na začiatok, že ak je počet childov == 1, tak sa vypočíta koľko presne má prvkov v heape a nemusí sa celý pejsť
-        //stále to je akože O(n) ale uvidíme ako to ovplyvní čas, tá optimalizácia platí pre počet všetkých clusterov na začiatku, čiže kapacita, potom bude
-        //safe uvažovať, že môžeme brať n_clusters od každého čiže čím viac toho bude, tak tým rýchlejšie to bude
-
-        //má to 2 časti, vymazať ten vymazaný cluster a 2. časť je nahradiť c1 staré s novými hodnotami, všetky
-        //1.časť:
-        //clusters->clusters[min.i].in_heap--;
-
-
-        /*gettimeofday(&start, NULL);
-        int to_delete = clusters->clusters[min.i].in_heap + clusters->clusters[min.j].in_heap;
-        int deleted = 0; //spoločný delete
-
-        int n = heap->heapsize;
-        int indexes_to_delete[to_delete] = {};
-        int it = 0;
-
-        printf("heapsize %d, min.i %d min.j %d\n\n",heap->heapsize,min.i,min.j);
-        for (int i=0;i<heap->heapsize;i++) {
-            //printf("i: %d heap i: %d j: %d\n",i,heap->children[i].i,heap->children[i].j);
-            if (heap->children[i].i == min.i || heap->children[i].i == min.j) { //vymaže c1 aj c2 v jednom cykle
-                //indexes_to_delete[it++] = i;
-                deleted++;
-                remove_any_heap(i,heap);
-                //printf("deleted %d/%d\n",deleted,to_delete);
-
-            }
-            //printf("i: %d\n",heap->children[i].i);
-            if (deleted == to_delete) {
-                break;
-            }
-        }
-        gettimeofday(&end, NULL);
-        elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
-        printf("Delete in heap: %fs\n",elapsed);*/
-        //presunieme odstranovanie do heapify operácii
-        //CHYBA: tým, že sa opravujú pri delete prvky, tak sa vymienajú s inými, ktoré chcem ja nahradiť a odstranuju sa potom špatné indexy
-        //remove_many_heap(indexes_to_delete,heap);
-        //remove_any_heap(i,heap);
 
 
         //vymazanie zhlukov - neodstranuju sa LL lebo tie sa len presuvaju, neviem to ani dealokovat lebo to nie su pointery, tak len viem nastaviť head na NULL
@@ -802,18 +703,16 @@ PROTO_CLUSTER_LIST *aglomeratne_clusterovanie(PROTO_CLUSTER_LIST *clusters, HEAP
 
 
 
+        //rebuild heap musí byť v add_child aby sa nepridalo viac ako je kapacita
 
 
 
 
-        //for (int i=0;i<clusters->clusters[min.i].n_of_children;i++) {
-        //    printf("BOD %d: %d,%d\n",i,clusters->clusters[min.i].children[i].x,clusters->clusters[min.i].children[i].y);
-        //}
         gettimeofday(&start, NULL);
         //pocitanie centroidu/medoidu nového clustera
-
+        BOD centroid_medoid;
         if (mode == 0) {
-            centroid_medoid = calculate_centroid(&clusters->clusters[min.i],centroid_medoid);
+            centroid_medoid = calculate_centroid(&clusters->clusters[min.i]);
             //printf("Centroid: %d,%d\n",centroid_medoid->x,centroid_medoid->y);
         }
         else {
@@ -822,12 +721,13 @@ PROTO_CLUSTER_LIST *aglomeratne_clusterovanie(PROTO_CLUSTER_LIST *clusters, HEAP
         }
         gettimeofday(&end, NULL);
         elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
-        printf("Pocitanie stredu: %fs\n",elapsed);
+        //printf("Pocitanie stredu: %fs\n",elapsed);
 
 
         gettimeofday(&start, NULL);
         //vypocet noveho riadka - potrebujem funkciu na centroid/medoid
 
+        BOD bod;
         //int added = 0;
         if (mode == 0) { //centroid
             for (int i=0;i<clusters->capacity;i++) { //vzdialenost všetkých clusterov a nás
@@ -836,12 +736,17 @@ PROTO_CLUSTER_LIST *aglomeratne_clusterovanie(PROTO_CLUSTER_LIST *clusters, HEAP
 
 
 
-                    bod = calculate_centroid(&clusters->clusters[i],bod);
+                    bod = calculate_centroid(&clusters->clusters[i]);
                     //printf("new centroid %d,%d\n",bod->x,bod->y);
 
-                    int dist = calculate_distance(centroid_medoid,bod);
+                    int dist = calculate_distance(&centroid_medoid,&bod);
                     if (dist != 0) { //vlozenie do heapu nového riadka
+                        if (i == min.i) {
+                            printf("pozor chyba\n");
 
+
+
+                        }
                         add_child(heap,min.i,i,dist,clusters);
                         //add_child_buffer(heap);
 
@@ -855,7 +760,7 @@ PROTO_CLUSTER_LIST *aglomeratne_clusterovanie(PROTO_CLUSTER_LIST *clusters, HEAP
             for (int i=0;i<clusters->capacity;i++) { //vzdialenost všetkých clusterov a nás
                 if (clusters->clusters[i].head != NULL) {
                     bod = calculate_medoid(&clusters->clusters[i]);
-                    int dist = calculate_distance(centroid_medoid,bod);
+                    int dist = calculate_distance(&centroid_medoid,&bod);
 
                     if (dist != 0) { //vlozenie do heapu nového riadka
                         add_child(heap,min.i,i,dist,clusters);
@@ -868,14 +773,14 @@ PROTO_CLUSTER_LIST *aglomeratne_clusterovanie(PROTO_CLUSTER_LIST *clusters, HEAP
         //clusters->clusters[min.i].in_heap = added;
         gettimeofday(&end, NULL);
         elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
-        printf("Pridanie noveho riadka: %fs\n",elapsed);
-        printf("Prvkov v heape: %d\n",heap->heapsize);
-        printf("#################\n\n");
+        //printf("Pridanie noveho riadka: %fs\n",elapsed);
+        //printf("Prvkov v heape: %d\n",heap->heapsize);
+        //printf("#################\n\n");
 
     }
 
-    free(centroid_medoid);
-    free(bod);
+
+
 
     return clusters;
 }
@@ -1225,7 +1130,7 @@ int main() {
  * OPTIMALIZACIA v realokáciach clusterovania, čo sa dá spraviť namiesto toho, je že by sme predalokovali capacity prvkov a potom len mali indexy, že kde začína
  * v tom poli ten cluster konkretny
  *
- * TODO: spraviť zdielanu množinu cluster bodov medzi clustermi, aby sa nemuselo vôbec realokovať, nejak doriešiť vytvorenie heapu aby sa tak veľa nealokovalo keď nemusí
+ *
  */
 
 
@@ -1237,6 +1142,9 @@ int main() {
  * Nová CHUNKBUFFER alokácia: fess rýchle, ale čas je z cyklenia, ale asi lepšie to už nebude
  * 20+20000: 1.19s
  * 20000+20000: 2.6s-2.8s
+ * --neplatí, je to bez heapify, som sprostý--
+ * ale aspoň pamäťovo je to banger
+ *
  *
  * RECAP: nie úplne moj nápad, ale moja implementácia
  * + žiadne relokácie, akože je tam malloc, ale lepšie ako realloc
@@ -1251,7 +1159,59 @@ int main() {
  * a to je akože zvačšenie bez toho, aby sme museli kopírovať prvky pri realokácii
  */
 
+//DELETE V HEAPE:
+/* prechádzam experimentálne na metódu, kde ak sa naplní heap so svojou rezervou 20%, tak sa prestavia heap, odstranene prvky sa nahradia poslednym prvkom
+ * potom pri dosiahnuti hranice sa všetky "odstránia", testy akú veľkú rezervu je dobré mať a či ju škálovať so zmenšujúcou sa veľkosťou heapu
+ * nevýhoda: pamäť navyše lebo 20% je hodne pri veľkom heape, ale malo by sa to zlepšovať rýchlostne lebo bude menej prvkov, možno domyslieť
+ * dáko dealokáciu voľného miesta, ale to mi príde veľmi extra, že môže sa alokovať nový heap a dealokovať starý a bude tam len koľko treba
+ * vždy bude menší a menší, jedine problém s pamäťou, lebo sa bude často realokovať tým, že 20% heapu je málo, pri 20000 bodoch to je okolo 200 cluster operácii
+ * ak je v heape 20 000 000 prvkov + 4 mil. rezerva
+ *
+ * testy s rebuildom: (bez realokácie)
+ * 20+20000: 15.4s-15.6s
+ * 20000+20000:
+ */
 
+//FIXED, problem bol v recyklovaní premenných Centroid_medoid a Bod, lebo niekde sa nastavil na prvok v clsuteri a potom sa niekde prepísal nechtiac a
+/* bol iný centroid potom, to je fixed, momentálne časy:
+ *
+ * //REBUILD BEZ REALOKACIE + VYPISY REBUILDU + NEMENI SA REZERVA - to je len clusterovanie
+ * 20+20000: 22.47s
+ * 20000+20000: 39.8s
+ * 16000+16000: 15.98s
+ * 20+32000: 72.08s hodne špatné zhoršenie
+ * 32000+32000: 70.01s-71.3s wat, toto je zas lepšie
+ *
+ *
+ * //REBUILD BEZ REALOKACIE + VYPISY REBUILDU + MENI SA REZERVA - to je len clusterovanie, 3/5 best times
+ * 20+20000: 13.837s - best time
+ * 20000+20000: 29.46s
+ * 16000+16000: 15.28s
+ * 20+32000: 37.97s slušné - best time
+ * 32000+32000: 66.33s ?? - best time
+ *
+ *
+ *
+ * //REBUILD S REALOKACIOU + VYPISY REBUILDU + NEMENI SA REZERVA - to je len clusterovanie
+ * 20+20000: 21.81s (zdá sa, že bottleneck je veľkosť heapu pre operácie typu pridanie riadku a search, čiže zmenšiť heap čo najrýchlejšie je efektívne)
+ * 20000+20000: 26.36s (rebuild s realokáciou, výpisy rebuildu, nemení sa rezerva, čiže pomáha realokácia)
+ * 16000+16000: 15.8s len mierne zhoršenie
+ * 20+32000: 66.15s? waaat, čiže častejší rebuild je lepší?
+ * 32000+32000: 80.23s (asi by som povedal, že častejší rebuild urýchloval bottleneck, čiže operácie clusterov, rýchlejší výber, pridávanie riadku etc.)
+ *
+ *
+ *
+ * //REBUILD S REALOKACIOU + VYPISY REBUILDU + MENI SA REZERVA - to je len clusterovanie, 2/5 best time
+ * 20+20000: 14.19s (celkom časté rebuildy)
+ * 20000+20000: 25.085s (čiže častejší rebuild, pomalšie lebo sa rebuilduje rýchlejšie a prevyšuje to zisk) - best time
+ * 16000+16000: 15.02s akože ?? - best time
+ * 20+32000: 38.15s (len to zabralo 1.5GB heap, ale rýchlo to zmizlo aspoň)
+ * 32000+32000: 71.21s (fess vela bodov, ale malý heap, čiže to je zdržiavané na tých cluster operáciách)
+ *
+ *
+ * //CONCLUSION: keď sa mení rezerva, tak sú dobré časy, to je 1. vec, hoci sú časy podobné až na to posledné, tak sa stráca čas realokáciou, lebo treba veľa pamäte
+ * realoknúť
+ */
 
 
 
