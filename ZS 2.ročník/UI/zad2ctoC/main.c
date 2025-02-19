@@ -830,8 +830,8 @@ int main() {
 
     struct timeval start, end;
 
-    int prvotne = 20;
-    int druhotne = 20000;
+    int prvotne = 32000;
+    int druhotne = 32000;
 
 
     int capacity = prvotne + druhotne;
