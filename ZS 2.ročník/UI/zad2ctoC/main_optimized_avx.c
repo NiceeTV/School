@@ -24,6 +24,12 @@ typedef struct heap_child {
     float dist;
 } HEAP_CHILD;
 
+typedef struct heap {
+    HEAP_CHILD *children;
+    int heapsize;
+    int capacity;
+    int reserve;
+} HEAP;
 
 typedef struct bod  {
     struct bod *next;
@@ -46,8 +52,22 @@ typedef struct seach_res {
     int found;
 } SEARCH_RES;
 
+typedef struct proto_cluster { //16B na cluster * 20000 = 312kB treba to asi alokovat dynamicky, ale to je jedno
+    //využijem čo som použil vyššie štruktúru BOD, ktorá má next pointer, ktorý slúžil na tvorbu LL v HASHTABLE
+    BOD *head;
+    BOD *tail;
+} PROTO_CLUSTER;
+
+typedef struct proto_cluster_list {
+    PROTO_CLUSTER *clusters; //8+4*n_children to do zmeniť na predalokovanú tabuľku potom ale, zatiaľ to je 48B na cluster
+    int active_clusters;
+    int capacity; //viem, že ich je capacita, ale to je jedno
+} PROTO_CLUSTER_LIST;
+
 
 //idem generovať body, tu ide nie o generovanie, ale o počítanie matice vzd
+HEAP *clean_heap(HEAP *heap, PROTO_CLUSTER_LIST *clist);
+
 
 
 int generate_range(int upper, int lower) {
@@ -55,8 +75,142 @@ int generate_range(int upper, int lower) {
     return x;
 }
 
+HEAP *create_heap(int n,int reserve) {
+
+    HEAP *heap = _aligned_malloc(sizeof(HEAP),32);
+
+    heap->children = _aligned_malloc(sizeof(HEAP_CHILD)*n,32);
+    heap->heapsize = 0;
+    heap->capacity = n;
+    heap->reserve = reserve;
+    return heap;
+}
+
+void heapify_up(HEAP *heap, int idx) {
+    //pri add sa to dá na najbližšie prázdne miesto a potom sa posúva hore kým nie je správne
+    while (idx > 0) {
+        int p_idx = (idx-1)/2;
+
+        if (heap->children[p_idx].dist <= heap->children[idx].dist) { //ak je platný a
+            break;
+        }
+
+        //swap mna a parenta, swap ala C
+        HEAP_CHILD tmp = heap->children[p_idx];
+        heap->children[p_idx] = heap->children[idx];
+        heap->children[idx] = tmp;
+
+        idx = p_idx;
+    }
+}
+
+void heapify_down(HEAP *heap, int idx) {
+    //pri add sa to dá na najbližšie prázdne miesto a potom sa posúva hore kým nie je správne
+
+    while (1) {
+        int left = 2*idx+1;
+        int right = left+1; //2i+1, optimalizácia xd
+
+        //hladame smallest idx
+        int smallest = idx;
+
+        if (left < heap->heapsize && heap->children[left].dist < heap->children[smallest].dist) {
+            smallest = left;
+        }
+
+        if (right < heap->heapsize && heap->children[right].dist < heap->children[smallest].dist) {
+            smallest = right;
+        }
+
+        //heap down pre smallest idx
+        if (smallest != idx) {
+            //swap mna a childa
+            HEAP_CHILD tmp = heap->children[smallest];
+            heap->children[smallest] = heap->children[idx];
+            heap->children[idx] = tmp;
+            idx = smallest;
+
+        }
+        else {
+            break; //koniec heapify-down
+        }
+    }
+}
 
 
+
+void add_child_buffer(HEAP *heap, HEAP_CHILD *to_add) {
+    heap->children[heap->heapsize++] = *to_add; //prekopíruje obsah pointera
+    heapify_up(heap,heap->heapsize - 1);
+}
+
+
+HEAP *clean_heap(HEAP *heap, PROTO_CLUSTER_LIST *clist) {
+
+    printf("REBUILDING HEAP, OLD SIZE: %d\n",heap->heapsize); //hybridný prístup, ak sa nepodarí mallocnut nový heap, tak sa bude pokračovať dalej kym nebude miesto na to
+
+    int n = heap->heapsize;
+    heap->heapsize = 0;
+    int k = 0;
+
+    while (k < n) {
+        if (clist->clusters[heap->children[k].i].head == NULL || clist->clusters[heap->children[k].j].head == NULL) {
+            heap->children[k] = heap->children[n-1]; //n sa správa ako heapsize
+            n--;
+            continue;
+        }
+
+
+        //pošle sa do heapu
+        add_child_buffer(heap,&heap->children[k]);
+        k++;
+    }
+
+
+    if (heap->heapsize < heap->capacity - heap->reserve) {
+        heap->reserve = (int)(heap->heapsize*0.2);
+        heap->capacity = heap->heapsize + heap->reserve;
+
+        //ATTEMPTING TO REALOC
+        /*HEAP_CHILD *new_heap_children = realloc(heap->children,heap->capacity * sizeof(HEAP_CHILD));
+        if (new_heap_children) {
+            heap->children = new_heap_children;
+        }
+        printf("realloced to %d\n",heap->capacity);*/
+    }
+
+
+
+    printf("DONE, new size: %d/%d\n",heap->heapsize, heap->capacity);
+    return heap;
+}
+
+
+
+
+
+void add_child(HEAP *heap, const int i, const int j, const float dist,PROTO_CLUSTER_LIST *clist) {
+    //temporary uloženie c1 head, aby som mohol vymazať aj jeho prvky z heapu
+    /*if (heap->heapsize == heap->capacity) { //REBUILD HEAP - bez alokácií
+        BOD *tmp = clist->clusters[i].head;
+        clist->clusters[i].head = NULL; //aby clean_heap vymazal aj tieto prvky
+
+        heap = clean_heap(heap, clist);
+        clist->clusters[i].head = tmp;
+    }*/
+
+    //__builtin_prefetch(&heap->children[heap->heapsize + 1], 1, 3); //toto pomohlo celkom
+    int *heapsize = &heap->heapsize;
+    HEAP_CHILD tmp = heap->children[*heapsize];
+    tmp.i = i;
+    tmp.j = j;
+    tmp.dist = dist;
+
+    (*heapsize)++;
+
+    //printf("helo");
+    //heapify_up(heap,heap->heapsize - 1); //--0.1s
+}
 
 SEARCH_RES *ll_search(BOD* head, BOD *searched, SEARCH_RES *res) {
     res->found = 0;
@@ -123,7 +277,7 @@ void free_table(HASHTABLE *table) {
 }
 
 
-HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res, BOD *extracted) {
+HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res, BODY *extracted) {
     short x = dummy->x;
     short y = dummy->y;
     short success = 0;
@@ -164,19 +318,22 @@ HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res, BOD *extracte
     }
 
     if (success && extracted != NULL) {
-        extracted[table->n_of_children-1] = *new_b;
+        extracted->x[table->n_of_children-1] = new_b->x;
+        extracted->y[table->n_of_children-1] = new_b->y;
     }
     return table;
 }
 
-BOD *extract_items_from_hs(HASHTABLE *table, BOD *extracted, int last_n) {
+BODY *extract_items_from_hs(HASHTABLE *table, BODY *extracted, int last_n) {
     int index = 0;
     for (int i=0;i<table->capacity;i++) {
         BOD *selected = &table->children[i];
 
         if (selected->assigned == 1) { //ináč nás to nezaujíma
             while (selected != NULL) {
-                extracted[last_n+index] = *selected;
+                extracted->x[last_n+index] = selected->x;
+                extracted->y[last_n+index] = selected->y;
+
                 index++;
                 selected = selected->next;
             }
@@ -205,7 +362,7 @@ HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
 }
 
 
-HASHTABLE* druhotne_body(int n, HASHTABLE *table, BOD *extracted) {
+HASHTABLE* druhotne_body(int n, HASHTABLE *table, BODY *extracted) {
     int target = table->n_of_children + n;
     SEARCH_RES *res = malloc(sizeof(SEARCH_RES));
     BOD *dummy = malloc(sizeof(BOD));
@@ -217,8 +374,9 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table, BOD *extracted) {
     while (table->n_of_children != target) {
         //nahodne číslo 0 až n_of_children
         short x = generate_range(table->n_of_children-1,0);
-        BOD selected = extracted[x]; //ušetrené 0.007s? 0.018s->0.011s bez alokácie
-
+        BOD selected;
+        selected.x = (short)(extracted->x[x]); //ušetrené 0.007s? 0.018s->0.011s bez alokácie
+        selected.y = (short)(extracted->y[x]);
 
         short bod_x = selected.x;
         short bod_y = selected.y;
@@ -284,11 +442,14 @@ int get_valid_values_n(BODY *body, int n) {
 }
 
 
-HEAP_CHILD* compute_squared_distance_matrix_avx(BODY *body, int heap_size,int n) {
+HEAP* create_matica_vzd2(BODY *body, int heap_size,int n, PROTO_CLUSTER_LIST *clist) {
     __m256 xi, yi, xj, yj, dx, dy, dx2, dy2, dist, mask, mask2,dist2, threshold;
 
-    HEAP_CHILD *children = malloc(sizeof(HEAP_CHILD) * heap_size);
-    if (children == NULL) {
+
+    int reserve = (int)(heap_size*0.2); //20% rezerva
+    HEAP *heap = create_heap(heap_size+reserve,reserve); //20% rezerva
+
+    if (heap == NULL) {
         printf("chybicka se vloudila\n");
     }
 
@@ -321,33 +482,43 @@ HEAP_CHILD* compute_squared_distance_matrix_avx(BODY *body, int heap_size,int n)
             mask2 = _mm256_and_ps(mask,mask2);
             dist2 = _mm256_and_ps(dist, mask2); //vynuluje hodnoty, ktoré nesplnaju podmienku
 
-            int bitmask = _mm256_movemask_ps(mask); //vyberie najvyšší bit z každej hodnoty
-            int num_valid = __builtin_popcount(bitmask); //počet 1tiek v maske
 
-            if (num_valid) {
-                for (int k=0;k<8;k++) {
-                    if (dist2[k] != 0) {
-                        HEAP_CHILD *to_change = &children[heap_idx++];
-                        to_change->dist = dist2[k];
-                        to_change->i = i;
-                        to_change->j = j + k;
-                    }
+            int bitmask = _mm256_movemask_ps(mask2); //vyberie najvyšší bit z každej hodnoty
+            if (bitmask == 0) continue;
+
+
+            //int num_valid = __builtin_popcount(bitmask); //počet 1tiek v maske
+
+            //HEAP_CHILD to_add[8];
+            //int indices[8];
+
+            // _mm256_store_ps(distances, dist);
+
+            // Priamo pracujeme s platnými hodnotami
+            for (int k = 0; k < 8; k++) {
+                if (bitmask & (1 << k)) {
+                    add_child(heap,i,j+k,dist2[k],NULL);
                 }
             }
+
+
         }
     }
     printf("end %d\n",heap_idx);
-    return children;
+    return heap;
 }
-
 
 
 
 int main() {
     struct timeval start, end;
-    alignas(32) BODY* body = _aligned_malloc(sizeof(BODY),32);
+
+
     int n = PRVOTNE_BODY+DRUHOTNE_BODY;
-    gettimeofday(&start, NULL);
+
+
+
+
     //HASHTABLE
     HASHTABLE table; //4B * capacity + 8B = 80 008B ak capacity = 20 000
     table.capacity = (PRVOTNE_BODY < DRUHOTNE_BODY) ? 2*DRUHOTNE_BODY : 2*PRVOTNE_BODY;
@@ -357,8 +528,9 @@ int main() {
     table.collision_pointers = malloc(sizeof(BOD*)*table.free_pointers);
     init_table(&table); //inicializuje na 0,0 a assigned=0 a pod.
 
-    BOD *extracted = malloc(sizeof(BOD)*n);
 
+    BODY* extracted = _aligned_malloc(sizeof(BODY),32);
+    HEAP *heap;
 
 
     //prvotne generovanie
@@ -370,10 +542,13 @@ int main() {
     //druhotne generovanie
     druhotne_body(DRUHOTNE_BODY,&table,extracted); //--0.0016s
     extracted = extract_items_from_hs(&table, extracted, PRVOTNE_BODY); //extrakcia, finalne body --0.002s
-    free_table(&table); //dealokuj childov tabuľky --0.0028s, nedá sa nijak viac, veď sa tam nič nerobí pomaly, záleží od col_ptrs
+    free_table(&table); //dealokuj childov tabuľky --0.0025s, nedá sa nijak viac, veď sa tam nič nerobí pomaly, záleží od col_ptrs
 
 
+    gettimeofday(&start, NULL);
     //vytvorenie heapu
+    int valid = get_valid_values_n(extracted,n);
+    HEAP *children = create_matica_vzd2(extracted,valid,n, NULL);
 
 
 
@@ -413,7 +588,7 @@ int main() {
  *
  *
  *
- * DRUHOTNE_BODY -- 0.028s sekcia
+ * DRUHOTNE_BODY -- 0.025s sekcia
  * momentálne čas: 0.0016s pre 32000 bodov, čiže zhruba ako prvotne generovanie, skúsim niečo zlepšiť
  * ani v extract_items ani free_table sa už viac nedá nič robiť
  *
@@ -421,9 +596,20 @@ int main() {
  *
  *
  * VYTVORENIE HEAPU: ten už je dosť rýchly, ale ešte som tam nedal tvorbu heapu, len kopírovanie
+ * vytvorenie heapu trvá 1.25s z pôvodných 7.56s, čo je cool, ale nestačí
  *
+ * //0.18s na prechádzanie, čiže nájsť valid a potom znova to vypočítať, zvyšný čas 1.07s je stavanie heapu, alebo pridanie 16 mil. prvkov do heapu
+ * bez heapify-up: 0.67s-0.69s
+ * teraz celkom 0.74s pre 16mil. prvkov
  *
+ * TODO-rovno to dať do extracted v prvotnom generovaní, aby si to nemusel celé iterovať v extract_items
  *
+ * IDEA STAVANIA HEAPU:
+ * prekopírovať do cez AVX a potom spraviť heapify na to, to ušetrí čas kopírovania
+ *
+ * IDEA CRAZY 2: prerobiť heap na SoA ako aj body, lebo potom viem hromadne ukladať distances, i, j etc.
+ *
+ * na porovnanie momentálne: 0.75s pre 32000+32000 prvkov čo je cca 16 mil. prvkov
  *
  */
 
