@@ -18,14 +18,16 @@ typedef struct body {
     alignas(32) float y[PRVOTNE_BODY+DRUHOTNE_BODY];
 } BODY;
 
-typedef struct heap_child {
+typedef struct min_pair {
     int i;
     int j;
-    float dist;
-} HEAP_CHILD;
+} MIN_PAIR;
+
 
 typedef struct heap {
-    HEAP_CHILD *children;
+    int *i_array;
+    int *j_array;
+    float *dist_array;
     int heapsize;
     int capacity;
     int reserve;
@@ -53,7 +55,6 @@ typedef struct seach_res {
 } SEARCH_RES;
 
 typedef struct proto_cluster { //16B na cluster * 20000 = 312kB treba to asi alokovat dynamicky, ale to je jedno
-    //využijem čo som použil vyššie štruktúru BOD, ktorá má next pointer, ktorý slúžil na tvorbu LL v HASHTABLE
     BOD *head;
     BOD *tail;
 } PROTO_CLUSTER;
@@ -69,7 +70,6 @@ typedef struct proto_cluster_list {
 HEAP *clean_heap(HEAP *heap, PROTO_CLUSTER_LIST *clist);
 
 
-
 int generate_range(int upper, int lower) {
     int x = rand() % (upper-lower+1) + lower; //0 až upper
     return x;
@@ -79,7 +79,11 @@ HEAP *create_heap(int n,int reserve) {
 
     HEAP *heap = _aligned_malloc(sizeof(HEAP),32);
 
-    heap->children = _aligned_malloc(sizeof(HEAP_CHILD)*n,32);
+    heap->i_array = _aligned_malloc(sizeof(int)*n,32);
+    heap->j_array = _aligned_malloc(sizeof(int)*n,32);
+    heap->dist_array = _aligned_malloc(sizeof(float)*n,32);
+
+
     heap->heapsize = 0;
     heap->capacity = n;
     heap->reserve = reserve;
@@ -91,14 +95,24 @@ void heapify_up(HEAP *heap, int idx) {
     while (idx > 0) {
         int p_idx = (idx-1)/2;
 
-        if (heap->children[p_idx].dist <= heap->children[idx].dist) { //ak je platný a
+        if (heap->dist_array[p_idx] <= heap->dist_array[idx]) { //ak je platný
             break;
         }
 
+
         //swap mna a parenta, swap ala C
-        HEAP_CHILD tmp = heap->children[p_idx];
-        heap->children[p_idx] = heap->children[idx];
-        heap->children[idx] = tmp;
+        int temp_i = heap->i_array[p_idx];
+        int temp_j = heap->j_array[p_idx];
+        float temp_dist = heap->dist_array[p_idx];
+
+        // Výmenná operácia
+        heap->i_array[p_idx] = heap->i_array[idx];
+        heap->j_array[p_idx] = heap->j_array[idx];
+        heap->dist_array[p_idx] = heap->dist_array[idx];
+
+        heap->i_array[idx] = temp_i;
+        heap->j_array[idx] = temp_j;
+        heap->dist_array[idx] = temp_dist;
 
         idx = p_idx;
     }
@@ -106,43 +120,65 @@ void heapify_up(HEAP *heap, int idx) {
 
 void heapify_down(HEAP *heap, int idx) {
     //pri add sa to dá na najbližšie prázdne miesto a potom sa posúva hore kým nie je správne
+    int n = heap->heapsize;
 
-    while (1) {
+    int temp_i = heap->i_array[idx];
+    int temp_j = heap->j_array[idx];
+    float temp_dist = heap->dist_array[idx];
+
+    while (2*idx +1 < n) {
         int left = 2*idx+1;
         int right = left+1; //2i+1, optimalizácia xd
+        int child = left;
 
-        //hladame smallest idx
-        int smallest = idx;
 
-        if (left < heap->heapsize && heap->children[left].dist < heap->children[smallest].dist) {
-            smallest = left;
+        if (right < n && heap->dist_array[right] < heap->dist_array[left]) {
+            child = right;
         }
 
-        if (right < heap->heapsize && heap->children[right].dist < heap->children[smallest].dist) {
-            smallest = right;
-        }
 
         //heap down pre smallest idx
-        if (smallest != idx) {
-            //swap mna a childa
-            HEAP_CHILD tmp = heap->children[smallest];
-            heap->children[smallest] = heap->children[idx];
-            heap->children[idx] = tmp;
-            idx = smallest;
+        if (heap->dist_array[child] < temp_dist) {
+            heap->i_array[idx] = heap->i_array[child];
+            heap->j_array[idx] = heap->j_array[child];
+            heap->dist_array[idx] = heap->dist_array[child];
+            idx = child;
+        } else {
+            break; //budem na správnom mieste
+        }
 
-        }
-        else {
-            break; //koniec heapify-down
-        }
+        //uložím seba, keď budem dobre, big brain moment
+        heap->i_array[idx] = temp_i;
+        heap->j_array[idx] = temp_j;
+        heap->dist_array[idx] = temp_dist;
     }
 }
 
+MIN_PAIR* remove_min(HEAP *heap, MIN_PAIR *min) {
+    if (heap->heapsize == 0) {
+        printf("prázdny heap\n");
+        min->i = -1;
+        return min; //-1 je neplatné dist
+    }
 
 
-void add_child_buffer(HEAP *heap, HEAP_CHILD *to_add) {
-    heap->children[heap->heapsize++] = *to_add; //prekopíruje obsah pointera
-    heapify_up(heap,heap->heapsize - 1);
+    //int min = heap->i_array[0];
+    min->i = heap->i_array[0];
+    min->j = heap->j_array[0];
+    heap->heapsize -= 1;
+
+    printf("dist %f ",heap->dist_array[0]);
+
+    int h_size = heap->heapsize;
+    heap->i_array[0] = heap->i_array[h_size];
+    heap->j_array[0] = heap->j_array[h_size];
+    heap->dist_array[0] = heap->dist_array[h_size];
+
+    heapify_down(heap,0);
+    return min;
 }
+
+
 
 
 HEAP *clean_heap(HEAP *heap, PROTO_CLUSTER_LIST *clist) {
@@ -154,15 +190,24 @@ HEAP *clean_heap(HEAP *heap, PROTO_CLUSTER_LIST *clist) {
     int k = 0;
 
     while (k < n) {
-        if (clist->clusters[heap->children[k].i].head == NULL || clist->clusters[heap->children[k].j].head == NULL) {
-            heap->children[k] = heap->children[n-1]; //n sa správa ako heapsize
+        if (clist->clusters[heap->i_array[k]].head == NULL || clist->clusters[heap->j_array[k]].head == NULL) {
+            heap->i_array[k] = heap->i_array[n-1];  //n sa správa ako heapsize
+            heap->j_array[k] = heap->j_array[n-1];
+            heap->dist_array[k] = heap->dist_array[n-1];
+
             n--;
             continue;
         }
 
 
         //pošle sa do heapu
-        add_child_buffer(heap,&heap->children[k]);
+        int h_size = heap->heapsize;
+        heap->i_array[h_size] = heap->i_array[k];  //n sa správa ako heapsize
+        heap->j_array[h_size] = heap->j_array[k];
+        heap->dist_array[h_size] = heap->dist_array[k];
+        heap->heapsize++;
+
+        heapify_up(heap,heap->heapsize - 1);
         k++;
     }
 
@@ -191,25 +236,24 @@ HEAP *clean_heap(HEAP *heap, PROTO_CLUSTER_LIST *clist) {
 
 void add_child(HEAP *heap, const int i, const int j, const float dist,PROTO_CLUSTER_LIST *clist) {
     //temporary uloženie c1 head, aby som mohol vymazať aj jeho prvky z heapu
-    /*if (heap->heapsize == heap->capacity) { //REBUILD HEAP - bez alokácií
+    if (heap->heapsize == heap->capacity) { //REBUILD HEAP - bez alokácií
         BOD *tmp = clist->clusters[i].head;
         clist->clusters[i].head = NULL; //aby clean_heap vymazal aj tieto prvky
 
         heap = clean_heap(heap, clist);
         clist->clusters[i].head = tmp;
-    }*/
+    }
 
     //__builtin_prefetch(&heap->children[heap->heapsize + 1], 1, 3); //toto pomohlo celkom
-    int *heapsize = &heap->heapsize;
-    HEAP_CHILD tmp = heap->children[*heapsize];
-    tmp.i = i;
-    tmp.j = j;
-    tmp.dist = dist;
+    int heapsize = heap->heapsize;
+    heap->i_array[heapsize] = i;
+    heap->j_array[heapsize] = j;
+    heap->dist_array[heapsize] = dist;
+    heap->heapsize++;
 
-    (*heapsize)++;
 
     //printf("helo");
-    //heapify_up(heap,heap->heapsize - 1); //--0.1s
+    heapify_up(heap,heap->heapsize - 1); //--0.1s
 }
 
 SEARCH_RES *ll_search(BOD* head, BOD *searched, SEARCH_RES *res) {
@@ -480,30 +524,37 @@ HEAP* create_matica_vzd2(BODY *body, int heap_size,int n, PROTO_CLUSTER_LIST *cl
 
             mask2 = _mm256_cmp_ps(dist,_mm256_set1_ps(0.0f), _CMP_NEQ_OQ);
             mask2 = _mm256_and_ps(mask,mask2);
-            dist2 = _mm256_and_ps(dist, mask2); //vynuluje hodnoty, ktoré nesplnaju podmienku
+            //dist2 = _mm256_and_ps(dist, mask2); //vynuluje hodnoty, ktoré nesplnaju podmienku
 
 
             int bitmask = _mm256_movemask_ps(mask2); //vyberie najvyšší bit z každej hodnoty
             if (bitmask == 0) continue;
 
 
-            //int num_valid = __builtin_popcount(bitmask); //počet 1tiek v maske
 
-            //HEAP_CHILD to_add[8];
-            //int indices[8];
+            while (bitmask) {
+                int k = __builtin_ctz(bitmask); // zistí index najnižšieho nastaveného bitu
+                // Vymažeme tento bit zo "bitmask"
+                bitmask &= bitmask - 1;
 
-            // _mm256_store_ps(distances, dist);
+                //printf("storing @%d: %d %d %f\n",stored_idxs,i,j+offset,dist2[offset]);
+                heap->dist_array[heap_idx] = dist[k];
+                heap->i_array[heap_idx] = i;
+                heap->j_array[heap_idx] = j+k;
+                heap_idx++;
 
-            // Priamo pracujeme s platnými hodnotami
-            for (int k = 0; k < 8; k++) {
-                if (bitmask & (1 << k)) {
-                    add_child(heap,i,j+k,dist2[k],NULL);
-                }
             }
-
-
         }
     }
+    heap->heapsize = heap_idx;
+    int h_size = heap->heapsize;
+
+    // Prechádzame vnútorné uzly od spodného rodiča smerom hore
+    for (int i = (h_size / 2) - 1; i >= 0; i--) { //--0.2s
+        heapify_down(heap, i);
+    }
+
+
     printf("end %d\n",heap_idx);
     return heap;
 }
@@ -513,10 +564,7 @@ HEAP* create_matica_vzd2(BODY *body, int heap_size,int n, PROTO_CLUSTER_LIST *cl
 int main() {
     struct timeval start, end;
 
-
     int n = PRVOTNE_BODY+DRUHOTNE_BODY;
-
-
 
 
     //HASHTABLE
@@ -548,9 +596,18 @@ int main() {
     gettimeofday(&start, NULL);
     //vytvorenie heapu
     int valid = get_valid_values_n(extracted,n);
-    HEAP *children = create_matica_vzd2(extracted,valid,n, NULL);
+    heap = create_matica_vzd2(extracted,valid,n, NULL);
 
+    /*MIN_PAIR *test = malloc(sizeof(MIN_PAIR));
+    test->i = -1;
+    test->j = -1;
 
+    for (int i = 0; i < 1000; i++) {
+        //printf("dist: %g ", heap->dist_array[0]);
+        test = remove_min(heap, test);
+        printf("i:%d j:%d\n",test->i,test->j);
+
+    }*/
 
 
 
