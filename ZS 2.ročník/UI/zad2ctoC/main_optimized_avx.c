@@ -9,6 +9,7 @@
 #define PRVOTNE_BODY 32000
 #define DRUHOTNE_BODY 32000 //musí byť dokopy % 8, kvôli AVX, 20024 je % 8
 #define THRESHOLD 250000.0f
+#define INDEX_BUFFER_SIZE 50
 #define COL_PTR_RATE 0.4
 
 
@@ -54,16 +55,19 @@ typedef struct seach_res {
     int found;
 } SEARCH_RES;
 
+
 typedef struct proto_cluster { //16B na cluster * 20000 = 312kB treba to asi alokovat dynamicky, ale to je jedno
+    //využijem čo som použil vyššie štruktúru BOD, ktorá má next pointer, ktorý slúžil na tvorbu LL v HASHTABLE
     BOD *head;
     BOD *tail;
 } PROTO_CLUSTER;
 
 typedef struct proto_cluster_list {
-    PROTO_CLUSTER *clusters; //8+4*n_children to do zmeniť na predalokovanú tabuľku potom ale, zatiaľ to je 48B na cluster
     int active_clusters;
     int capacity; //viem, že ich je capacita, ale to je jedno
+    PROTO_CLUSTER *clusters; //8+4*n_children to do zmeniť na predalokovanú tabuľku potom ale, zatiaľ to je 48B na cluster
 } PROTO_CLUSTER_LIST;
+
 
 
 //idem generovať body, tu ide nie o generovanie, ale o počítanie matice vzd
@@ -167,7 +171,7 @@ MIN_PAIR* remove_min(HEAP *heap, MIN_PAIR *min) {
     min->j = heap->j_array[0];
     heap->heapsize -= 1;
 
-    printf("dist %f ",heap->dist_array[0]);
+    //printf("dist %f ",heap->dist_array[0]);
 
     int h_size = heap->heapsize;
     heap->i_array[0] = heap->i_array[h_size];
@@ -368,25 +372,8 @@ HASHTABLE *add_hash(HASHTABLE *table, BOD *dummy, SEARCH_RES *res, BODY *extract
     return table;
 }
 
-BODY *extract_items_from_hs(HASHTABLE *table, BODY *extracted, int last_n) {
-    int index = 0;
-    for (int i=0;i<table->capacity;i++) {
-        BOD *selected = &table->children[i];
 
-        if (selected->assigned == 1) { //ináč nás to nezaujíma
-            while (selected != NULL) {
-                extracted->x[last_n+index] = selected->x;
-                extracted->y[last_n+index] = selected->y;
-
-                index++;
-                selected = selected->next;
-            }
-        }
-    }
-    return extracted;
-}
-
-HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
+HASHTABLE* prvotne_body(int n,HASHTABLE *table, BODY *extracted) {
     //nesmu byť rovnaké tie body
 
     SEARCH_RES *res = malloc(sizeof(SEARCH_RES));
@@ -398,7 +385,7 @@ HASHTABLE* prvotne_body(int n,HASHTABLE *table) {
         dummy->x = x;
         dummy->y = y;
         //cek ci je v zozname
-        table = add_hash(table, dummy, res, NULL);
+        table = add_hash(table, dummy, res, extracted);
     }
     free(dummy);
     free(res);
@@ -447,10 +434,9 @@ HASHTABLE* druhotne_body(int n, HASHTABLE *table, BODY *extracted) {
 }
 
 
-
 int get_valid_values_n(BODY *body, int n) {
     int valid = 0;
-    __m256 xi, yi, xj, yj, dx, dy, dx2, dy2, mask, mask2,dist, dist2,threshold;
+    __m256 xi, yi, xj, yj, dx, dy, dx2, dy2, mask, mask2,dist,threshold;
 
     int size;
     threshold = _mm256_set1_ps(THRESHOLD);
@@ -486,8 +472,11 @@ int get_valid_values_n(BODY *body, int n) {
 }
 
 
-HEAP* create_matica_vzd2(BODY *body, int heap_size,int n, PROTO_CLUSTER_LIST *clist) {
+HEAP* create_matica_vzd2(BODY *body, int heap_size,int n) {
     __m256 xi, yi, xj, yj, dx, dy, dx2, dy2, dist, mask, mask2,dist2, threshold;
+
+    struct timeval start, end;
+    gettimeofday(&start, NULL);
 
 
     int reserve = (int)(heap_size*0.2); //20% rezerva
@@ -554,10 +543,263 @@ HEAP* create_matica_vzd2(BODY *body, int heap_size,int n, PROTO_CLUSTER_LIST *cl
         heapify_down(heap, i);
     }
 
+    gettimeofday(&end, NULL);
+    double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
 
-    printf("end %d\n",heap_idx);
+    printf("Heap created: %fs\n",elapsed);
     return heap;
 }
+
+PROTO_CLUSTER_LIST* init_cluster_list(BOD *extracted, int capacity) {
+    PROTO_CLUSTER_LIST *c_list = malloc(sizeof(PROTO_CLUSTER_LIST));
+    c_list->active_clusters = capacity;
+    c_list->capacity = capacity;
+    c_list->clusters = malloc(sizeof(PROTO_CLUSTER)*capacity);
+
+    //init clusterov
+    for (int i=0;i<capacity;i++) {
+        BOD *to_add = malloc(sizeof(BOD));
+        *to_add = extracted[i];
+        to_add->next = NULL;
+        c_list->clusters[i].head = to_add;
+        c_list->clusters[i].tail = to_add;
+    }
+    return c_list;
+}
+
+
+
+
+
+
+INDEX_BUFFER merge_proto_clusters(INDEX_BUFFER *c1, INDEX_BUFFER *c2) {
+    //precykli c2 a prekopíruj na tail c1
+
+    if (c1->n_of_children == 0 || c2->n_of_children == 0) {
+        printf("ou nou, shit happened\n");
+    }
+
+
+    //profesionál, hen
+    INDEX_BUFFER *act1 = c1;
+    while (act1->n_of_children == INDEX_BUFFER_SIZE) {
+        act1 = act1->next;
+    }
+
+    INDEX_BUFFER *act2 = c2;
+    while (act2->n_of_children == INDEX_BUFFER_SIZE) {
+        act2 = act2->next;
+    }
+
+
+    if (act1->n_of_children + act2->n_of_children < INDEX_BUFFER_SIZE) { //po tomto sa zníži veľkosť clusterov aspoň 50x
+        //len prekopíruj prvky lebo sa zmestia
+        //môže mať viac bufferov
+        for (int i=0;i<act2->n_of_children;i++) {
+            act1->indexes[act1->n_of_children+i] = act2->indexes[i];
+        }
+
+        //printf("hej hou");
+        //free(act2->indexes);
+        _aligned_free(act2->indexes);
+        act1->n_of_children += act2->n_of_children;
+        act2->n_of_children = 0;
+    }
+    else {
+        //nezmestí sa potrebuje si požičať
+        int cap = (act2->n_of_children < INDEX_BUFFER_SIZE - act1->n_of_children) ? act2->n_of_children : INDEX_BUFFER_SIZE - act1->n_of_children;
+        for (int i=0;i<cap;i++) {
+            act1->indexes[act1->n_of_children+i] = act2->indexes[act2->n_of_children-i];
+        }
+        act1->n_of_children += act2->n_of_children;
+        act2->n_of_children = 0;
+    }
+
+    //big spajacka
+    INDEX_BUFFER *tmp = act1;
+
+
+
+    //treba dealokovať LEN proto cluster, nie jeho prvky, lebo tie sa len presuvaju
+    return *c1;
+}
+
+
+
+
+
+
+
+
+INDEX_BUFFER_LIST *aglomeratne_clusterovanie(INDEX_BUFFER_LIST *clusters, HEAP *heap, int mode) { //mode 0 - centroid, 1 - medoid
+    struct timeval start, end;
+
+
+
+    MIN_PAIR *min = malloc(sizeof(MIN_PAIR));
+
+    while (1) {
+        gettimeofday(&start, NULL);
+        min = remove_min(heap, min);
+        //printf("min i:%d j:%d\n",min->i,min->j);
+
+        if (min->i == -1) {
+            break; //prázdna halda
+        }
+
+
+        while (clusters->clusters[min->i].n_of_children == 0  || clusters->clusters[min->j].n_of_children == 0) { //ak je jeden z nich "odstránený"
+            //printf("ešte znova, removed %d,%d\n",min.i,min.j);
+            min = remove_min(heap,min);
+            if (min->i == -1) {
+                break; //prázdna halda
+            }
+
+        }
+
+
+        //printf("heap: %d\n",heap->heapsize);
+        //printf("som tu i:%d, j:%d, dist:%d\n",min.i,min.j,min.dist);
+        if (clusters->active_clusters == 1 || min->i == -1) { //nemám čo spájať
+            break;
+        }
+
+        gettimeofday(&end, NULL);
+        double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+        //printf("\n#################\n");
+        //printf("Search: %fs\n",elapsed);
+
+
+
+        gettimeofday(&start, NULL);
+
+        //merge clusters, aby sa to nekopírovalo zbytočne
+        clusters->clusters[min->i] = merge_proto_clusters(&clusters->clusters[min->i],&clusters->clusters[min->j]);
+
+        //proto delete
+        clusters->clusters[min->j].n_of_children = 0;
+        clusters->active_clusters--;
+
+        //printf("n child %d\n",clusters->clusters[min->i].n_of_children);
+
+        /*
+        gettimeofday(&end, NULL);
+        elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+        //printf("Merge: %fs\n",elapsed);
+
+
+
+
+        gettimeofday(&start, NULL);
+        //priemerná vzdialenosť
+        int podmienka = find_avg_dist(&clusters->clusters[min.i],mode);
+
+        //ci presiahol priem vzdialenost 500 alebo nie
+        if (podmienka == 1) {
+            printf("Bola prekročená maximálna priemerná vzdialenosť clustera.\n");
+            break;
+        }
+        gettimeofday(&end, NULL);
+        elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+        //printf("Avg dist: %fs\n",elapsed);
+
+
+
+
+        //vymazanie zhlukov - neodstranuju sa LL lebo tie sa len presuvaju, neviem to ani dealokovat lebo to nie su pointery, tak len viem nastaviť head na NULL
+        //printf("freed %d\n",clusters->clusters[min.j].n_of_children);
+        clusters->clusters[min.j].head = NULL;
+        clusters->clusters[min.j].tail = NULL; //nemusím, ale je to lepšie
+        clusters->active_clusters -= 1;
+
+
+
+        //rebuild heap musí byť v add_child aby sa nepridalo viac ako je kapacita
+
+
+
+
+        gettimeofday(&start, NULL);
+        //pocitanie centroidu/medoidu nového clustera
+        BOD centroid_medoid;
+        if (mode == 0) {
+            centroid_medoid = calculate_centroid(&clusters->clusters[min.i]);
+            //printf("Centroid: %d,%d\n",centroid_medoid->x,centroid_medoid->y);
+        }
+        else {
+            centroid_medoid = calculate_medoid(&clusters->clusters[min.i]);
+            //printf("Medoid: %d,%d\n",centroid_medoid.x,centroid_medoid.y);
+        }
+        gettimeofday(&end, NULL);
+        elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+        //printf("Pocitanie stredu: %fs\n",elapsed);
+
+
+        gettimeofday(&start, NULL);
+        //vypocet noveho riadka - potrebujem funkciu na centroid/medoid
+
+        BOD bod;
+        //int added = 0;
+        if (mode == 0) { //centroid
+            for (int i=0;i<clusters->capacity;i++) { //vzdialenost všetkých clusterov a nás
+                if (clusters->clusters[i].head != NULL) {
+                    //printf("pridavam \n");
+
+
+
+                    bod = calculate_centroid(&clusters->clusters[i]);
+                    //printf("new centroid %d,%d\n",bod->x,bod->y);
+
+                    int dist = calculate_distance(&centroid_medoid,&bod);
+                    if (dist != 0) { //vlozenie do heapu nového riadka
+                        if (i == min.i) {
+                            printf("pozor chyba\n");
+
+
+
+                        }
+                        add_child(heap,min.i,i,dist,clusters);
+                        //add_child_buffer(heap);
+
+                        //added++;
+                        //printf("added %d,%d a %d\n",min.i,i, dist);
+                    }
+                }
+            }
+        }
+        else {
+            for (int i=0;i<clusters->capacity;i++) { //vzdialenost všetkých clusterov a nás
+                if (clusters->clusters[i].head != NULL) {
+                    bod = calculate_medoid(&clusters->clusters[i]);
+                    int dist = calculate_distance(&centroid_medoid,&bod);
+
+                    if (dist != 0) { //vlozenie do heapu nového riadka
+                        add_child(heap,min.i,i,dist,clusters);
+                        //added++;
+                        //printf("added %d,%d a %d\n",min.i,i, dist);
+                    }
+                }
+            }
+        }
+        //clusters->clusters[min.i].in_heap = added;
+        gettimeofday(&end, NULL);
+        elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+        //printf("Pridanie noveho riadka: %fs\n",elapsed);
+        //printf("Prvkov v heape: %d\n",heap->heapsize);
+        //printf("#################\n\n");
+        */
+    }
+
+
+
+
+    return clusters;
+}
+
+
+
+
+
 
 
 
@@ -576,38 +818,44 @@ int main() {
     table.collision_pointers = malloc(sizeof(BOD*)*table.free_pointers);
     init_table(&table); //inicializuje na 0,0 a assigned=0 a pod.
 
-
+    //init
     BODY* extracted = _aligned_malloc(sizeof(BODY),32);
     HEAP *heap;
 
 
     //prvotne generovanie
-    prvotne_body(PRVOTNE_BODY,&table);
-    extracted = extract_items_from_hs(&table, extracted, 0); //extrakcia po prvom generovaní
+    prvotne_body(PRVOTNE_BODY,&table,extracted);
     clear_table(&table); //recyklácia tabuľky
 
 
     //druhotne generovanie
     druhotne_body(DRUHOTNE_BODY,&table,extracted); //--0.0016s
-    extracted = extract_items_from_hs(&table, extracted, PRVOTNE_BODY); //extrakcia, finalne body --0.002s
-    free_table(&table); //dealokuj childov tabuľky --0.0025s, nedá sa nijak viac, veď sa tam nič nerobí pomaly, záleží od col_ptrs
+    free_table(&table); //dealokuj childov tabuľky --0.0020s, nedá sa nijak viac, veď sa tam nič nerobí pomaly, záleží od col_ptrs
+
+
+    //vytvorenie heapu
+    int valid = get_valid_values_n(extracted,n);
+    heap = create_matica_vzd2(extracted,valid,n);
+
 
 
     gettimeofday(&start, NULL);
-    //vytvorenie heapu
-    int valid = get_valid_values_n(extracted,n);
-    heap = create_matica_vzd2(extracted,valid,n, NULL);
+    //INIT CLUSTER LIST - nechám tak či to zmením, teraz to je LL a šetrí to pamäť
+    //IDEA: každý cluster má zoznam indexov v spoločnej pamäti prvkov, nič sa nealokuje, nenapája, len sa menia indexy
+    //treba najprv index array pre extracted spoločný, ktorý bod kam patrí do akého clusteru
 
-    /*MIN_PAIR *test = malloc(sizeof(MIN_PAIR));
-    test->i = -1;
-    test->j = -1;
+    //čiže extracted sa používa na počítanie distances
+    INDEX_BUFFER_LIST* clusters = init_cluster_list(n);
 
-    for (int i = 0; i < 1000; i++) {
-        //printf("dist: %g ", heap->dist_array[0]);
-        test = remove_min(heap, test);
-        printf("i:%d j:%d\n",test->i,test->j);
+    clusters = aglomeratne_clusterovanie(clusters,heap,0);
 
+
+
+    /*for (int i=0;i<n;i++) {
+        //printf("%d ",clusters->clusters[i].indexes[0]);
+        printf("%d-ty cluster: %g,%g na indexe %d\n",i,extracted->x[clusters->clusters[i].indexes[0]],extracted->y[clusters->clusters[i].indexes[0]],clusters->clusters[i].indexes[0]);
     }*/
+
 
 
 
@@ -615,6 +863,9 @@ int main() {
     double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
 
     printf("Time Elapsed: %fs",elapsed);
+
+
+
 
     //vytvorenie heapu
     //int valid = get_valid_values_n(body,n);
@@ -633,6 +884,7 @@ int main() {
  * čiže vždy prinajhoršom máš aspoň 2x miesta pre každé generovanie, namiesto toho spravím iné, spravím pool kolíznych pointerov, ktoré sa budú proste pridelovať
  * bude ich okolo 50%, čo je viac akoby trebalo, keďže všeobecne platí, že máme okolo 35% kolízií, ale nie je to tak veľa pamäte a po generovaní sa uvolní
  *
+ *
  * PRVOTNE_BODY - 0.00155s sekcia
  * všetko je optimalizované vrámci add_hash, lebo tá funkcia inak nič nerobí, čiže hashtable má pool pointerov pre kolízie
  * aby sa nemuselo alokovať počas tvorby, zväčšenie tabulky a lepšia hash funkcia
@@ -642,8 +894,7 @@ int main() {
  * EXTRACT + CLEAR TABLE:
  * čas je konštantne 0.001549s, čiže tam nie je moc čo zlepšovať
  *
- *
- *
+
  *
  * DRUHOTNE_BODY -- 0.025s sekcia
  * momentálne čas: 0.0016s pre 32000 bodov, čiže zhruba ako prvotne generovanie, skúsim niečo zlepšiť
@@ -659,15 +910,29 @@ int main() {
  * bez heapify-up: 0.67s-0.69s
  * teraz celkom 0.74s pre 16mil. prvkov
  *
- * TODO-rovno to dať do extracted v prvotnom generovaní, aby si to nemusel celé iterovať v extract_items
  *
- * IDEA STAVANIA HEAPU:
+ *
+ * STAVANIE HEAPU:
  * prekopírovať do cez AVX a potom spraviť heapify na to, to ušetrí čas kopírovania
  *
  * IDEA CRAZY 2: prerobiť heap na SoA ako aj body, lebo potom viem hromadne ukladať distances, i, j etc.
  *
  * na porovnanie momentálne: 0.75s pre 32000+32000 prvkov čo je cca 16 mil. prvkov
+ * nechám to tak, je to celkom decentné
  *
+ * Idem fixnut extracted v prvom generovaní, je to malý fix a asi mi nič nedá, ale estetika,
+ * ZMENA: odstránil som extract_items_from_hs a je to rovno v tých generovaniach
+ * Druhotne generovanie: 0.0025 -> 0.002s
+ *
+ *
+ * TODO problem s clean heapom je, že ak aj realokuješ, tak sa to stále musí prekopírovať - fix: mallocnut novú array a tam to pridať
+ * INIT CLUSTER LIST
+ * možno riešenie chunkbufferov, že každý bude mať svoj buffer a prekopírujú sa ak bude potrebovať, inač sa uvolní
+ * otázka či potrebujem tie cluster_indexes vôbec, ale asi hej aby som vedel čo je active clsuter a čo nie, ale teoreticky nie viem to aj cez index buffer napr.
+ *
+ * ja čoskoro olutujem toto super komplikovanie, dalo by sa zrušiť index buffer list a všetko si pamätať v clusterovacej funkcii teoreticky
+ *
+ * 
  */
 
 
