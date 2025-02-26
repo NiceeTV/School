@@ -8,15 +8,19 @@
 
 #define PRVOTNE_BODY 32000
 #define DRUHOTNE_BODY 32000 //musí byť dokopy % 8, kvôli AVX, 20024 je % 8
+#define TOTAL_BODY (PRVOTNE_BODY+DRUHOTNE_BODY)
 #define THRESHOLD 250000.0f
 #define INDEX_BUFFER_SIZE 50
 #define COL_PTR_RATE 0.4
+#define BITS_PER_INT 32
+#define BIT_ARR_SIZE ((TOTAL_BODY + BITS_PER_INT - 1)/BITS_PER_INT)
 
 
 //Unit stride
 typedef struct body {
-    alignas(32) float x[PRVOTNE_BODY+DRUHOTNE_BODY]; //int je viac podporovaný v AVX ako short
-    alignas(32) float y[PRVOTNE_BODY+DRUHOTNE_BODY];
+    alignas(32) float x[TOTAL_BODY]; //int je viac podporovaný v AVX ako short
+    alignas(32) float y[TOTAL_BODY];
+    alignas(32) int next_indices[TOTAL_BODY];
 } BODY;
 
 typedef struct min_pair {
@@ -67,6 +71,12 @@ typedef struct proto_cluster_list {
     int capacity; //viem, že ich je capacita, ale to je jedno
     PROTO_CLUSTER *clusters; //8+4*n_children to do zmeniť na predalokovanú tabuľku potom ale, zatiaľ to je 48B na cluster
 } PROTO_CLUSTER_LIST;
+
+
+
+
+
+
 
 
 
@@ -550,6 +560,28 @@ HEAP* create_matica_vzd2(BODY *body, int heap_size,int n) {
     return heap;
 }
 
+void set_bit(uint32_t* arr, size_t index, int value) {
+    size_t arr_index = index / BITS_PER_INT;        // Určujeme index celého čísla
+    size_t bit_index = index % BITS_PER_INT;        // Určujeme index bitu v čísle
+
+    if (value == 1) {
+        arr[arr_index] |= (1U << bit_index);         // Nastavíme bit na 1
+    } else {
+        arr[arr_index] &= ~(1U << bit_index);        // Nastavíme bit na 0
+    }
+}
+
+// Funkcia na získanie hodnoty bitu (0 alebo 1)
+int get_bit(const uint32_t* arr, size_t index) {
+    size_t arr_index = index / BITS_PER_INT;        // Určujeme index celého čísla
+    size_t bit_index = index % BITS_PER_INT;        // Určujeme index bitu v čísle
+    return (arr[arr_index] >> bit_index) & 1;        // Vrátime hodnotu bitu (0 alebo 1)
+}
+
+
+
+
+
 PROTO_CLUSTER_LIST* init_cluster_list(BOD *extracted, int capacity) {
     PROTO_CLUSTER_LIST *c_list = malloc(sizeof(PROTO_CLUSTER_LIST));
     c_list->active_clusters = capacity;
@@ -572,71 +604,40 @@ PROTO_CLUSTER_LIST* init_cluster_list(BOD *extracted, int capacity) {
 
 
 
-INDEX_BUFFER merge_proto_clusters(INDEX_BUFFER *c1, INDEX_BUFFER *c2) {
+void merge_proto_clusters(BODY* extracted, int c1, int c2) {
     //precykli c2 a prekopíruj na tail c1
 
-    if (c1->n_of_children == 0 || c2->n_of_children == 0) {
-        printf("ou nou, shit happened\n");
+    int curr_idx = c1;
+    while (extracted->next_indices[curr_idx] != -1) {
+        curr_idx = extracted->next_indices[curr_idx];
     }
-
-
-    //profesionál, hen
-    INDEX_BUFFER *act1 = c1;
-    while (act1->n_of_children == INDEX_BUFFER_SIZE) {
-        act1 = act1->next;
-    }
-
-    INDEX_BUFFER *act2 = c2;
-    while (act2->n_of_children == INDEX_BUFFER_SIZE) {
-        act2 = act2->next;
-    }
-
-
-    if (act1->n_of_children + act2->n_of_children < INDEX_BUFFER_SIZE) { //po tomto sa zníži veľkosť clusterov aspoň 50x
-        //len prekopíruj prvky lebo sa zmestia
-        //môže mať viac bufferov
-        for (int i=0;i<act2->n_of_children;i++) {
-            act1->indexes[act1->n_of_children+i] = act2->indexes[i];
-        }
-
-        //printf("hej hou");
-        //free(act2->indexes);
-        _aligned_free(act2->indexes);
-        act1->n_of_children += act2->n_of_children;
-        act2->n_of_children = 0;
-    }
-    else {
-        //nezmestí sa potrebuje si požičať
-        int cap = (act2->n_of_children < INDEX_BUFFER_SIZE - act1->n_of_children) ? act2->n_of_children : INDEX_BUFFER_SIZE - act1->n_of_children;
-        for (int i=0;i<cap;i++) {
-            act1->indexes[act1->n_of_children+i] = act2->indexes[act2->n_of_children-i];
-        }
-        act1->n_of_children += act2->n_of_children;
-        act2->n_of_children = 0;
-    }
-
-    //big spajacka
-    INDEX_BUFFER *tmp = act1;
-
-
-
-    //treba dealokovať LEN proto cluster, nie jeho prvky, lebo tie sa len presuvaju
-    return *c1;
+    //sme na konci, tak pripneme c2
+    extracted->next_indices[curr_idx] = c2;
 }
 
 
 
 
-
-
-
-
-INDEX_BUFFER_LIST *aglomeratne_clusterovanie(INDEX_BUFFER_LIST *clusters, HEAP *heap, int mode) { //mode 0 - centroid, 1 - medoid
+BODY *aglomeratne_clusterovanie(BODY *extracted, HEAP *heap, int mode) { //mode 0 - centroid, 1 - medoid
     struct timeval start, end;
 
 
 
     MIN_PAIR *min = malloc(sizeof(MIN_PAIR));
+    int active_clusters = TOTAL_BODY;
+    uint32_t cluster_maska[BIT_ARR_SIZE];
+
+    //inicializujeme pole na 1, pretože sú aktívne
+    for (size_t i = 0; i < BIT_ARR_SIZE; i++) {
+        cluster_maska[i] = 1;
+    }
+
+    for (int j=0;j<TOTAL_BODY;j++) {
+        extracted->next_indices[j] = -1; //init, neukazuje na nič
+    }
+
+
+
 
     while (1) {
         gettimeofday(&start, NULL);
@@ -648,7 +649,7 @@ INDEX_BUFFER_LIST *aglomeratne_clusterovanie(INDEX_BUFFER_LIST *clusters, HEAP *
         }
 
 
-        while (clusters->clusters[min->i].n_of_children == 0  || clusters->clusters[min->j].n_of_children == 0) { //ak je jeden z nich "odstránený"
+        while (get_bit(cluster_maska,min->i) == 0  || get_bit(cluster_maska,min->j) == 0 ) { //ak je jeden z nich "odstránený"
             //printf("ešte znova, removed %d,%d\n",min.i,min.j);
             min = remove_min(heap,min);
             if (min->i == -1) {
@@ -660,33 +661,33 @@ INDEX_BUFFER_LIST *aglomeratne_clusterovanie(INDEX_BUFFER_LIST *clusters, HEAP *
 
         //printf("heap: %d\n",heap->heapsize);
         //printf("som tu i:%d, j:%d, dist:%d\n",min.i,min.j,min.dist);
-        if (clusters->active_clusters == 1 || min->i == -1) { //nemám čo spájať
+        if (active_clusters == 1 || min->i == -1) { //nemám čo spájať
             break;
         }
 
         gettimeofday(&end, NULL);
         double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
         //printf("\n#################\n");
-        //printf("Search: %fs\n",elapsed);
+        printf("Search: %fs\n",elapsed);
 
 
 
         gettimeofday(&start, NULL);
 
         //merge clusters, aby sa to nekopírovalo zbytočne
-        clusters->clusters[min->i] = merge_proto_clusters(&clusters->clusters[min->i],&clusters->clusters[min->j]);
+        merge_proto_clusters(extracted,min->i,min->j);
 
         //proto delete
-        clusters->clusters[min->j].n_of_children = 0;
-        clusters->active_clusters--;
+        set_bit(cluster_maska,min->j,0);
+        active_clusters--;
 
         //printf("n child %d\n",clusters->clusters[min->i].n_of_children);
 
-        /*
+
         gettimeofday(&end, NULL);
         elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
         //printf("Merge: %fs\n",elapsed);
-
+/*
 
 
 
@@ -793,7 +794,7 @@ INDEX_BUFFER_LIST *aglomeratne_clusterovanie(INDEX_BUFFER_LIST *clusters, HEAP *
 
 
 
-    return clusters;
+    return extracted;
 }
 
 
@@ -806,12 +807,12 @@ INDEX_BUFFER_LIST *aglomeratne_clusterovanie(INDEX_BUFFER_LIST *clusters, HEAP *
 int main() {
     struct timeval start, end;
 
-    int n = PRVOTNE_BODY+DRUHOTNE_BODY;
+    int n = TOTAL_BODY;
 
 
     //HASHTABLE
     HASHTABLE table; //4B * capacity + 8B = 80 008B ak capacity = 20 000
-    table.capacity = (PRVOTNE_BODY < DRUHOTNE_BODY) ? 2*DRUHOTNE_BODY : 2*PRVOTNE_BODY;
+    table.capacity = (TOTAL_BODY) ? 2*DRUHOTNE_BODY : 2*PRVOTNE_BODY;
     table.free_pointers = (int)(table.capacity*COL_PTR_RATE);
     table.n_of_children = 0;// children sú inicializovaný na náhodné hodnoty
     table.children = (BOD *)malloc(table.capacity * sizeof(BOD));
@@ -845,9 +846,9 @@ int main() {
     //treba najprv index array pre extracted spoločný, ktorý bod kam patrí do akého clusteru
 
     //čiže extracted sa používa na počítanie distances
-    INDEX_BUFFER_LIST* clusters = init_cluster_list(n);
 
-    clusters = aglomeratne_clusterovanie(clusters,heap,0);
+
+    extracted = aglomeratne_clusterovanie(extracted,heap,0);
 
 
 
